@@ -28,9 +28,9 @@ echo "✓ Modules loaded"
 # PATHS  — adjust if yours differ
 # ==============================
 PROJECT_PATH="/home/gkianfar/scratch/Amin/microgrid"
-CODE_PATH="$PROJECT_PATH/code"
+CODE_PATH="/home/gkianfar/scratch/Amin/MSH/microgrid-"
 OUTPUT_BASE="$PROJECT_PATH/outputs"
-VENV_PATH="/home/gkianfar/scratch/Amin/microgridvenv"
+VENV_PATH="/home/gkianfar/scratch/Amin/MSH/microgridvenv"
 
 mkdir -p $OUTPUT_BASE/logs
 mkdir -p $OUTPUT_BASE/plots
