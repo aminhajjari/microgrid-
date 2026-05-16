@@ -6,8 +6,8 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --output=/home/gkianfar/scratch/Amin/microgrid/logs/hma_%j.out
-#SBATCH --error=/home/gkianfar/scratch/Amin/microgrid/logs/hma_%j.err
+#SBATCH --output=/home/gkianfar/scratch/Amin/MSH/output/logs/hma_%j.out
+#SBATCH --error=/home/gkianfar/scratch/Amin/MSH/output/logs/hma_%j.err
 
 set -e  # Exit immediately on any error
 
@@ -29,7 +29,7 @@ echo "✓ Modules loaded"
 # ==============================
 PROJECT_PATH="/home/gkianfar/scratch/Amin/microgrid"
 CODE_PATH="/home/gkianfar/scratch/Amin/MSH/microgrid-"
-OUTPUT_BASE="$PROJECT_PATH/outputs"
+OUTPUT_BASE="/home/gkianfar/scratch/Amin/MSH/output"
 VENV_PATH="/home/gkianfar/scratch/Amin/MSH/microgridvenv"
 
 mkdir -p $OUTPUT_BASE/logs
