@@ -96,7 +96,7 @@ def run_training(
     batch_size:  int  = 256,
     device:      str  = "cpu",
     scenario:    str  = "normal",
-    save_dir:    Path = Path("checkpoints"),
+    save_dir:    Path = Path("/home/gkianfar/scratch/Amin/MSH/output/checkpoints"),
     verbose:     bool = True,
 ) -> dict:
     save_dir.mkdir(exist_ok=True)
