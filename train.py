@@ -331,6 +331,6 @@ if __name__ == "__main__":
     if len(results) > 1:
         print_comparison_table(results)
 
-    out_dir = Path("plots")
+    out_dir = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
     plot_all_results(results, out_dir)
     print("\nDone.")
