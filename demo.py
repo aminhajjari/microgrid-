@@ -22,7 +22,7 @@ from metrics import rcir, lolp, renewable_utilisation_ratio, battery_degradation
 N_EPISODES = 60   # small enough to run in seconds; increase for real training
 BATCH_SIZE = 128
 DEVICE = "cpu"
-OUT_DIR = Path("demo_plots")
+OUT_DIR = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
 
 
