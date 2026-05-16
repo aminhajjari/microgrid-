@@ -325,6 +325,7 @@ if __name__ == "__main__":
             batch_size=args.batch,
             device=args.device,
             scenario=args.scenario,
+            save_dir=Path("/home/gkianfar/scratch/Amin/MSH/output/checkpoints"),
         )
         results.append(res)
 
