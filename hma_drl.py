@@ -172,7 +172,7 @@ class HMADRLFramework:
         # EV: cost savings from V2G – charging cost
         r_ev = -(lam * p_ev * _E.DT) * 0.5
         # Load: comfort (penalise deviation) + tariff savings
-        r_load = -abs(p_flex - 30.0) * _E.ZETA - lam * p_flex * 0.2
+        r_load = -abs(p_flex - 30.0) * _E.ZETA - lam * max(0, p_flex - 30.0) * 0.2
         # Grid: minimise import cost
         r_grid = -(lam * max(0, p_grid) * _E.DT) - ll * 2.0
 
