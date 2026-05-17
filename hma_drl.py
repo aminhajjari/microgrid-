@@ -136,7 +136,7 @@ class HMADRLFramework:
         # Supervisor
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
-        sup_action   = _softmax(np.random.randn(N_AGENTS))  # placeholder (re-computed at update)
+        sup_action = getattr(self, "_last_omega", _softmax(np.zeros(N_AGENTS)))
         self.supervisor.buffer.store(sup_obs, sup_action, global_reward, sup_next_obs, float(done))
 
     # ------------------------------------------------------------------
