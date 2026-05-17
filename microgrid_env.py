@@ -285,6 +285,7 @@ class MicrogridEnv(gym.Env):
             "p_ev": p_ev_actual,
             "p_grid": p_grid_actual,
             "p_load": p_load,
+            "p_flex": p_flex_actual,   # ← ADD THIS LINE
             "soc_bess": self.soc_bess,
             "soc_ev": self.soc_ev,
             "load_loss": load_loss,
