@@ -147,9 +147,12 @@ class HMADRLFramework:
             info = agent.update(batch_size)
             if info:
                 losses[name] = info
-        sup_info = self.supervisor.update(batch_size)
-        if sup_info:
-            losses["supervisor"] = sup_info
+
+        # Only train supervisor after local agents have some experience
+        if self.supervisor.buffer.size >= batch_size * 5:
+            sup_info = self.supervisor.update(batch_size)
+            if sup_info:
+                losses["supervisor"] = sup_info
         return losses
 
     # ------------------------------------------------------------------
@@ -176,7 +179,9 @@ class HMADRLFramework:
         # Grid: minimise import cost
         r_grid = -(lam * max(0, p_grid) * _E.DT) - ll * 2.0
 
-        return np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
+        rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
+        max_abs = np.abs(rewards).max() + 1e-8
+        return np.clip(rewards / max_abs, -1.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
