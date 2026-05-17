@@ -100,10 +100,12 @@ class HMADRLFramework:
                 action[idx] = self.agents[name].select_action(lo, deterministic=not explore)[0]
 
         # Supervisor adjusts coordination weights (Eq. 14)
+        # Supervisor adjusts coordination weights (Eq. 14)
         sup_obs = np.concatenate([obs, local_rewards])
         omega_raw = self.supervisor.select_action(sup_obs, deterministic=not explore)
         # Softmax to ensure ωi sum to 1 and are positive
         omega = _softmax(omega_raw)
+        self._last_omega = omega.copy()   # ← ADD THIS LINE
         # The supervisor could re-scale each action; here we modulate directly
         for i, name in enumerate(["bess", "ev", "load", "grid"]):
             action[LOCAL_ACT_IDX[name]] *= (1.0 + 0.3 * (omega[i] - 0.25))
