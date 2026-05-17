@@ -161,7 +161,7 @@ class HMADRLFramework:
         lam      = info.get("tariff", 0.1)
         p_bess   = info.get("p_bess", 0.0)
         p_ev     = info.get("p_ev", 0.0)
-        p_flex   = info.get("p_load", 0.0)
+        p_flex   = info.get("p_flex", info.get("p_load", 30.0))
         p_grid   = info.get("p_grid", 0.0)
         soc_bess = info.get("soc_bess", 0.5)
         ll       = info.get("load_loss", 0.0)
