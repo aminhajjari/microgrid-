@@ -7,7 +7,8 @@ Architecture (Section 2.3 of the paper):
   Lower layer  → 4 local agents  (BESS:TD3, EV:TD3, Load:SAC, Grid:SAC)
   Upper layer  → Supervisor agent (SAC) that outputs coordination weights ωi  (Eq. 14)
 
-Global reward shaping:  R(t) = Σ ωi · ri(t)
+Global reward shaping:  R(t) = Σ ωi · ri(t)   ← Eq. 14
+Reward normalisation:   all signals clipped to [-1, +1]  ← Section 2.4.7
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from agents import TD3Agent, SACAgent
 # Full observation:  [soc_bess, soc_ev, pv, load, tariff, sin_h, cos_h]  (dim=7)
 # Full action:       [p_bess, p_ev, p_flex, p_grid]  (dim=4)
 
-OBS_DIM = 7
-ACT_DIM = 4
+OBS_DIM  = 7
+ACT_DIM  = 4
 N_AGENTS = 4   # BESS, EV, Load, Grid
 
 # Local views: each agent sees a subset of the global state
@@ -71,10 +72,11 @@ class HMADRLFramework:
 
         # --- Supervisor agent (Section 2.3.3) ---
         # Input:  global obs (7) + 4 local rewards = 11 dims
-        # Output: 4 importance weights ωi ∈ [-1,1] → softmax'd to [0,1]
+        # Output: 4 importance weights ωi → softmax'd to sum=1
         self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_AGENTS, device=d)
 
-        self._last_omega = _softmax(np.zeros(N_AGENTS))   # FIX 1: always initialized
+        # FIX 1: always initialised — avoids getattr bug on first call
+        self._last_omega = _softmax(np.zeros(N_AGENTS))
         self._device = torch.device(d)
 
     # ------------------------------------------------------------------
@@ -91,6 +93,7 @@ class HMADRLFramework:
         if local_rewards is None:
             local_rewards = np.zeros(N_AGENTS)
 
+        # --- Local agent actions ---
         action = np.zeros(4)
         for name, idx in LOCAL_ACT_IDX.items():
             lo = local_obs(obs, name)
@@ -98,16 +101,17 @@ class HMADRLFramework:
                 noise = 0.1 if explore else 0.0
                 action[idx] = self.agents[name].select_action(lo, noise_std=noise)[0]
             else:
-                action[idx] = self.agents[name].select_action(lo, deterministic=not explore)[0]
+                action[idx] = self.agents[name].select_action(
+                    lo, deterministic=not explore
+                )[0]
 
-        # Supervisor adjusts coordination weights (Eq. 14)
-        # Supervisor adjusts coordination weights (Eq. 14)
-        sup_obs = np.concatenate([obs, local_rewards])
+        # --- Supervisor: coordination weights ωi (Eq. 14) ---
+        sup_obs   = np.concatenate([obs, local_rewards])
         omega_raw = self.supervisor.select_action(sup_obs, deterministic=not explore)
-        # Softmax to ensure ωi sum to 1 and are positive
-        omega = _softmax(omega_raw)
-        self._last_omega = omega.copy()   # ← ADD THIS LINE
-        # The supervisor could re-scale each action; here we modulate directly
+        omega     = _softmax(omega_raw)          # ensure ωi > 0 and sum to 1
+        self._last_omega = omega.copy()
+
+        # Modulate each local action by its weight (±30 % around neutral 0.25)
         for i, name in enumerate(["bess", "ev", "load", "grid"]):
             action[LOCAL_ACT_IDX[name]] *= (1.0 + 0.3 * (omega[i] - 0.25))
 
@@ -125,20 +129,24 @@ class HMADRLFramework:
         prev_local_rewards: np.ndarray,
     ):
         """Store (s,a,r,s') for every agent and the supervisor."""
-        next_local_rewards = local_rewards  # approximation for next-state reward
 
+        # --- Local agents ---
         for name, idx in LOCAL_ACT_IDX.items():
-            lo      = local_obs(obs, name)
+            lo      = local_obs(obs,      name)
             lo_next = local_obs(next_obs, name)
             act_i   = np.array([action[idx]])
             rew_i   = float(local_rewards[idx])
             self.agents[name].buffer.store(lo, act_i, rew_i, lo_next, float(done))
 
-        # Supervisor
+        # --- Supervisor ---
+        # Reward = weighted sum of local rewards  (Eq. 14: R = Σ ωi·ri)
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
-        sup_action = getattr(self, "_last_omega", _softmax(np.zeros(N_AGENTS)))
-        self.supervisor.buffer.store(sup_obs, sup_action, global_reward, sup_next_obs, float(done))
+        sup_action   = self._last_omega                          # FIX 1: always valid
+        sup_reward   = float(np.dot(self._last_omega, local_rewards))  # Eq. 14
+        self.supervisor.buffer.store(
+            sup_obs, sup_action, sup_reward, sup_next_obs, float(done)
+        )
 
     # ------------------------------------------------------------------
     def update_all(self, batch_size: int = 256) -> dict:
@@ -149,11 +157,12 @@ class HMADRLFramework:
             if info:
                 losses[name] = info
 
-        # Only train supervisor after local agents have some experience
-        if self.supervisor.buffer.size >= batch_size:   # FIX 4: same threshold as local agents
+        # FIX 4: supervisor trains at same threshold as local agents
+        if self.supervisor.buffer.size >= batch_size:
             sup_info = self.supervisor.update(batch_size)
             if sup_info:
                 losses["supervisor"] = sup_info
+
         return losses
 
     # ------------------------------------------------------------------
@@ -161,27 +170,46 @@ class HMADRLFramework:
         """
         Decompose the single-step info dict into per-agent reward signals.
         Agents: [BESS, EV, Load, Grid]
+
+        Signs follow the paper:
+          BESS: discharge (p_bess > 0) saves grid import  → positive reward
+                charge    (p_bess < 0) costs energy       → negative reward
+                degradation always subtracts              (Eq. 11)
+          EV:   same logic with 0.5 weighting for V2G
+          Load: comfort penalty + tariff savings          (Eq. 13)
+          Grid: import cost penalty + load-loss penalty   (Eq. 10)
+
+        Normalisation: scale to [-1,+1] per Section 2.4.7,
+        using max(|r|, 1) so small rewards are not amplified.
         """
-        lam      = info.get("tariff", 0.1)
-        p_bess   = info.get("p_bess", 0.0)
-        p_ev     = info.get("p_ev", 0.0)
-        p_flex   = info.get("p_flex", info.get("p_load", 30.0))
-        p_grid   = info.get("p_grid", 0.0)
-        soc_bess = info.get("soc_bess", 0.5)
+        lam      = info.get("tariff",    0.1)
+        p_bess   = info.get("p_bess",    0.0)
+        p_ev     = info.get("p_ev",      0.0)
+        p_flex   = info.get("p_flex",    info.get("p_load", 30.0))
+        p_grid   = info.get("p_grid",    0.0)
         ll       = info.get("load_loss", 0.0)
 
         from microgrid_env import MicrogridEnv as _E  # import constants
-        # BESS: cost savings from discharging at high tariff – degradation
-        r_bess = (lam * p_bess * _E.DT) - _E.GAMMA * (abs(p_bess) / _E.P_BESS_MAX) ** _E.KAPPA   # 
-        # EV: cost savings from V2G – charging cost
+
+        # FIX B: discharge rewarded, charge penalised; degradation always negative
+        r_bess = (lam * p_bess * _E.DT) \
+                 - _E.GAMMA * (abs(p_bess) / _E.P_BESS_MAX) ** _E.KAPPA
+
+        # FIX C: V2G discharge rewarded, charging penalised
         r_ev = (lam * p_ev * _E.DT) * 0.5
-        # Load: comfort (penalise deviation) + tariff savings
-        r_load = -abs(p_flex - 30.0) * _E.ZETA - lam * max(0, p_flex - 30.0) * 0.2
-        # Grid: minimise import cost
-        r_grid = -(lam * max(0, p_grid) * _E.DT) - ll * 0.5   #  softer load-loss penalty, consistent scale
+
+        # Comfort + tariff savings  (Eq. 13)
+        r_load = -abs(p_flex - 30.0) * _E.ZETA \
+                 - lam * max(0, p_flex - 30.0) * 0.2
+
+        # Grid import cost + softer load-loss penalty  (FIX 5)
+        r_grid = -(lam * max(0, p_grid) * _E.DT) - ll * 0.5
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
-        return np.clip(rewards, -10.0, 10.0)   # FIX 2: soft clip only, no normalization
+
+        # FIX 2 + Section 2.4.7: normalise to [-1,+1] without collapsing scale
+        scale = max(float(np.abs(rewards).max()), 1.0)
+        return np.clip(rewards / scale, -1.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -203,12 +231,14 @@ class FlatMADRL:
     def select_actions(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
         action = np.zeros(4)
         for name, idx in LOCAL_ACT_IDX.items():
-            lo = local_obs(obs, name)
+            lo    = local_obs(obs, name)
             noise = 0.1 if explore else 0.0
             if isinstance(self.agents[name], TD3Agent):
                 action[idx] = self.agents[name].select_action(lo, noise)[0]
             else:
-                action[idx] = self.agents[name].select_action(lo, deterministic=not explore)[0]
+                action[idx] = self.agents[name].select_action(
+                    lo, deterministic=not explore
+                )[0]
         return action.clip(-1, 1)
 
     def store_transitions(self, obs, action, rewards, next_obs, done, **_):
@@ -249,5 +279,5 @@ class SingleAgentDRL:
 def _softmax(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=np.float64)
     x -= x.max()
-    e = np.exp(x)
+    e  = np.exp(x)
     return e / e.sum()
