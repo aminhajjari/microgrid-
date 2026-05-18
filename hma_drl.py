@@ -178,7 +178,7 @@ class HMADRLFramework:
         # Load: comfort (penalise deviation) + tariff savings
         r_load = -abs(p_flex - 30.0) * _E.ZETA - lam * max(0, p_flex - 30.0) * 0.2
         # Grid: minimise import cost
-        r_grid = -(lam * max(0, p_grid) * _E.DT) - ll * 2.0
+        r_grid = -(lam * max(0, p_grid) * _E.DT) - ll * 0.5   #  softer load-loss penalty, consistent scale
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
         return np.clip(rewards, -10.0, 10.0)   # FIX 2: soft clip only, no normalization
