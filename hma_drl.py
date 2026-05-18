@@ -74,6 +74,7 @@ class HMADRLFramework:
         # Output: 4 importance weights ωi ∈ [-1,1] → softmax'd to [0,1]
         self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_AGENTS, device=d)
 
+        self._last_omega = _softmax(np.zeros(N_AGENTS))   # FIX 1: always initialized
         self._device = torch.device(d)
 
     # ------------------------------------------------------------------
