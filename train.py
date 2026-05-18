@@ -127,6 +127,8 @@ def run_training(
         if isinstance(controller, HMADRLFramework):
             lr = controller.compute_local_rewards(info)
             controller.store_transitions(obs, action, lr, rew, nobs, done, np.zeros(4))
+            #  supervisor buffer gets seeded during warm-up automatically via store_transitions
+            # — no change needed here, but ensure _last_omega is initialized (Fix 1 covers this)
         elif isinstance(controller, FlatMADRL):
             controller.store_transitions(obs, action, np.full(4, rew / 4), nobs, done)
         else:
