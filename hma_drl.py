@@ -150,7 +150,7 @@ class HMADRLFramework:
                 losses[name] = info
 
         # Only train supervisor after local agents have some experience
-        if self.supervisor.buffer.size >= batch_size * 5:
+        if self.supervisor.buffer.size >= batch_size:   # FIX 4: same threshold as local agents
             sup_info = self.supervisor.update(batch_size)
             if sup_info:
                 losses["supervisor"] = sup_info
