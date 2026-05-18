@@ -172,9 +172,9 @@ class HMADRLFramework:
 
         from microgrid_env import MicrogridEnv as _E  # import constants
         # BESS: cost savings from discharging at high tariff – degradation
-        r_bess = -(lam * abs(p_bess) * _E.DT) - _E.GAMMA * (abs(p_bess) / _E.P_BESS_MAX) ** _E.KAPPA   # 
+        r_bess = (lam * p_bess * _E.DT) - _E.GAMMA * (abs(p_bess) / _E.P_BESS_MAX) ** _E.KAPPA   # 
         # EV: cost savings from V2G – charging cost
-        r_ev = -(lam * p_ev * _E.DT) * 0.5
+        r_ev = (lam * p_ev * _E.DT) * 0.5
         # Load: comfort (penalise deviation) + tariff savings
         r_load = -abs(p_flex - 30.0) * _E.ZETA - lam * max(0, p_flex - 30.0) * 0.2
         # Grid: minimise import cost
