@@ -197,21 +197,9 @@ def run_training(
     # (Section 3.4 — robustness evaluation on unseen stress scenarios)
     # ------------------------------------------------------------------
     if eval_only:
-        print(f"[{label}] EVAL-ONLY mode — loading normal checkpoint …")
-        ckpt_path = save_dir / f"{method}_results.npz"
-        if not ckpt_path.exists():
-            raise FileNotFoundError(
-                f"No checkpoint found at {ckpt_path}.\n"
-                "Run normal-scenario training first before stress evaluation."
-            )
-        # We cannot reload neural-net weights from .npz (they weren't saved).
-        # For a proper implementation save torch state_dicts; here we warn and
-        # fall through to a short fine-tune (500 ep) on the stress scenario.
-        print(
-            "  NOTE: full weight serialisation not yet implemented.\n"
-            "  Running 500-episode fine-tune on stress scenario instead."
-        )
-        n_episodes = 500
+        print(f"[{label}] EVAL-ONLY mode — loading trained weights …")
+        load_weights(controller, save_dir, method)
+        n_episodes = 0   # skip training entirely, go straight to evaluation
 
     # ------------------------------------------------------------------
     # Warm-up replay buffer (Section 2.5)
