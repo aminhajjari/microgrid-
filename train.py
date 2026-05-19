@@ -241,9 +241,6 @@ def run_training(
     # ------------------------------------------------------------------
     # Greedy evaluation — 10 independent runs (Section 3.4.2)
     # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # Greedy evaluation — 10 independent runs (Section 3.4.2)
-    # ------------------------------------------------------------------
     print(f"\n[{label}] Evaluating (10 greedy runs) …")
     eval_costs, eval_rewards, eval_lolps = [], [], []
     for run in range(10):
