@@ -174,6 +174,29 @@ for METHOD in sa flat hma; do
 done
 
 # ==============================
+# STAGE 2b — 10 SEEDS FOR FIG 12
+# Paper Section 3.4.2: statistical reliability
+# ==============================
+echo "========================================="
+echo "STAGE 2b: HMA — 10 independent seeds (Fig 12)"
+echo "========================================="
+
+for SEED in 1 2 3 4 5 6 7 8 9 10; do
+    LOG="$OUTPUT_BASE/logs/hma_seed${SEED}_${SLURM_JOB_ID}.log"
+    echo "  → seed $SEED"
+    python train.py \
+        --method   hma     \
+        --scenario normal  \
+        --episodes 5000    \
+        --batch    256     \
+        --device   cuda    \
+        2>&1 | tee "$LOG"
+    python -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
+done
+echo "✓ All 10 seeds done"
+echo ""
+
+# ==============================
 # STAGE 3 — STRESS EVALUATION
 # Paper Section 3.4: evaluate HMA on stress scenarios
 # using the pre-trained normal model
