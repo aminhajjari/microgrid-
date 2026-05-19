@@ -121,6 +121,46 @@ def compute_rcir(costs: list) -> float:
     if mu == 0:
         return 1.0
     return float(np.clip(1 - c.std() / mu, 0, 1))
+def save_weights(controller, save_dir: Path, method: str):
+    w = {}
+    if isinstance(controller, HMADRLFramework):
+        for name, agent in controller.agents.items():
+            w[f"{name}_actor"]  = agent.actor.state_dict()
+            w[f"{name}_critic"] = agent.critic.state_dict()
+        w["supervisor_actor"]  = controller.supervisor.actor.state_dict()
+        w["supervisor_critic"] = controller.supervisor.critic.state_dict()
+    elif isinstance(controller, FlatMADRL):
+        for name, agent in controller.agents.items():
+            w[f"{name}_actor"]  = agent.actor.state_dict()
+            w[f"{name}_critic"] = agent.critic.state_dict()
+    else:
+        w["actor"]  = controller.agent.actor.state_dict()
+        w["critic"] = controller.agent.critic.state_dict()
+    torch.save(w, save_dir / f"{method}_weights.pt")
+    print(f"  Weights saved → {save_dir}/{method}_weights.pt")
+
+
+def load_weights(controller, save_dir: Path, method: str):
+    path = save_dir / f"{method}_weights.pt"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No weights at {path} — run normal scenario training first."
+        )
+    w = torch.load(path, map_location="cpu")
+    if isinstance(controller, HMADRLFramework):
+        for name, agent in controller.agents.items():
+            agent.actor.load_state_dict(w[f"{name}_actor"])
+            agent.critic.load_state_dict(w[f"{name}_critic"])
+        controller.supervisor.actor.load_state_dict(w["supervisor_actor"])
+        controller.supervisor.critic.load_state_dict(w["supervisor_critic"])
+    elif isinstance(controller, FlatMADRL):
+        for name, agent in controller.agents.items():
+            agent.actor.load_state_dict(w[f"{name}_actor"])
+            agent.critic.load_state_dict(w[f"{name}_critic"])
+    else:
+        controller.agent.actor.load_state_dict(w["actor"])
+        controller.agent.critic.load_state_dict(w["critic"])
+    print(f"  Weights loaded ← {path}")
 
 
 # ---------------------------------------------------------------------------
