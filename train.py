@@ -234,8 +234,13 @@ def run_training(
                 f"LOLP = {result['lolp']:.3f} | "
                 f"Elapsed = {elapsed:.1f}s"
             )
-      if not eval_only:
+
+    if not eval_only:
         save_weights(controller, save_dir, method)
+
+    # ------------------------------------------------------------------
+    # Greedy evaluation — 10 independent runs (Section 3.4.2)
+    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Greedy evaluation — 10 independent runs (Section 3.4.2)
     # ------------------------------------------------------------------
