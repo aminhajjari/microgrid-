@@ -121,6 +121,8 @@ def compute_rcir(costs: list) -> float:
     if mu == 0:
         return 1.0
     return float(np.clip(1 - c.std() / mu, 0, 1))
+
+
 def save_weights(controller, save_dir: Path, method: str):
     w = {}
     if isinstance(controller, HMADRLFramework):
