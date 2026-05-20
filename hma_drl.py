@@ -130,6 +130,7 @@ class HMADRLFramework:
         next_obs: np.ndarray,
         done: bool,
         prev_local_rewards: np.ndarray,
+        omega: np.ndarray,
     ):
         """Store (s,a,r,s') for every agent and the supervisor."""
 
@@ -142,11 +143,11 @@ class HMADRLFramework:
             self.agents[name].buffer.store(lo, act_i, rew_i, lo_next, float(done))
 
         # --- Supervisor ---
-        # Reward = weighted sum of local rewards  (Eq. 14: R = Σ ωi·ri)
+        # Reward = weighted sum of local rewards scaled to match env reward range
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
-        sup_action   = self._last_omega                          # FIX 1: always valid
-        sup_reward   = float(np.dot(self._last_omega, local_rewards))  # Eq. 14
+        sup_action   = omega
+        sup_reward   = float(np.dot(omega, local_rewards)) * 10.0  # scale to match env
         self.supervisor.buffer.store(
             sup_obs, sup_action, sup_reward, sup_next_obs, float(done)
         )
