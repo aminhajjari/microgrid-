@@ -82,7 +82,7 @@ def train_episode(env, controller, batch_size: int = 256,
             prev_local    = local_rewards.copy()
             local_rewards = controller.compute_local_rewards(info)
             controller.store_transitions(
-                obs, action, local_rewards, reward, next_obs, done, prev_local
+                obs, action, local_rewards, reward, next_obs, done, prev_local, omega
             )
         elif isinstance(controller, FlatMADRL):
             local_rewards = np.full(4, reward / 4)
