@@ -294,6 +294,8 @@ def plot_all_results(results: list, out_dir: Path):
     for r in results:
         m      = r["method"]
         rws    = r["rewards"]
+        if len(rws) < 20: 
+          continue
         smooth = np.convolve(rws, np.ones(20) / 20, mode="valid")
         ax.plot(np.arange(1, len(smooth) + 1), smooth,
                 color=colors[m], lw=2, label=labels[m])
