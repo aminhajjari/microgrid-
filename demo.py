@@ -53,8 +53,8 @@ def run_one(method: str, n_ep: int = N_EPISODES):
 
         for _ in range(env.T):
             if isinstance(ctrl, HMADRLFramework):
-                action = ctrl.select_actions(obs, local_rewards,
-                                             explore=(ep < n_ep * 0.8))
+                action, omega = ctrl.select_actions(obs, local_rewards,
+                                                    explore=(ep < n_ep * 0.8))
             else:
                 action = ctrl.select_actions(obs, explore=(ep < n_ep * 0.8))
 
@@ -64,7 +64,8 @@ def run_one(method: str, n_ep: int = N_EPISODES):
                 prev          = local_rewards.copy()
                 local_rewards = ctrl.compute_local_rewards(info)
                 ctrl.store_transitions(obs, action, local_rewards,
-                                       reward, nobs, done, prev)
+                                       reward, nobs, done, prev, omega)
+                
             elif isinstance(ctrl, FlatMADRL):
                 ctrl.store_transitions(obs, action,
                                        np.full(4, reward / 4), nobs, done)
