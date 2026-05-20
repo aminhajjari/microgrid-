@@ -72,7 +72,7 @@ def train_episode(env, controller, batch_size: int = 256,
 
     for _ in range(env.T):
         if isinstance(controller, HMADRLFramework):
-            action = controller.select_actions(obs, local_rewards, explore=explore)
+            action, omega = controller.select_actions(obs, local_rewards, explore=explore)
         else:
             action = controller.select_actions(obs, explore=explore)
 
