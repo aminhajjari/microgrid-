@@ -25,7 +25,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from microgrid_env import MicrogridEnv
-from hma_drl import HMADRLFramework, FlatMADRL, SingleAgentDRL
+
+from hma_drl import HMADRLFramework, FlatMADRL, SingleAgentDRL, _softmax
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +44,9 @@ def warmup_buffer(env, controller, steps: int = WARMUP_STEPS):
 
         if isinstance(controller, HMADRLFramework):
             lr = controller.compute_local_rewards(info)
+            omega = _softmax(np.zeros(4))
             controller.store_transitions(
-                obs, action, lr, rew, nobs, done, np.zeros(4)
+                obs, action, lr, rew, nobs, done, np.zeros(4), omega
             )
         elif isinstance(controller, FlatMADRL):
             controller.store_transitions(
