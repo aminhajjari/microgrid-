@@ -114,9 +114,10 @@ class HMADRLFramework:
         # Modulate each local action by its weight (±30 % around neutral 0.25)
 
         bias_scale = 0.2
-        for i, name in enumerate(["bess", "ev", "load", "grid"]):
-            idx = LOCAL_ACT_IDX[name]
-            action[idx] = np.clip(action[idx] + bias_scale * (omega[i] - 0.25), -1, 1)
+        if self.supervisor.buffer.size > 5000:
+            for i, name in enumerate(["bess", "ev", "load", "grid"]):
+                idx = LOCAL_ACT_IDX[name]
+                action[idx] = np.clip(action[idx] + bias_scale * (omega[i] - 0.25), -1, 1)
 
         return action, omega
 
