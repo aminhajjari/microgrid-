@@ -147,7 +147,7 @@ class HMADRLFramework:
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
         sup_action   = omega
-        sup_reward   = float(np.dot(omega, local_rewards)) * 10.0  # scale to match env
+        sup_reward   = float(np.dot(omega, local_rewards)) 
         self.supervisor.buffer.store(
             sup_obs, sup_action, sup_reward, sup_next_obs, float(done)
         )
