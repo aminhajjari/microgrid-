@@ -154,20 +154,19 @@ class HMADRLFramework:
 
     # ------------------------------------------------------------------
     def update_all(self, batch_size: int = 256) -> dict:
-        """Update all local agents + supervisor; return loss dict."""
-        losses = {}
-        for name, agent in self.agents.items():
-            info = agent.update(batch_size)
-            if info:
-                losses[name] = info
+    losses = {}
+    for name, agent in self.agents.items():
+        info = agent.update(batch_size)
+        if info:
+            losses[name] = info
 
-        # FIX 4: supervisor trains at same threshold as local agents
-        if self.supervisor.buffer.size >= batch_size:
-            sup_info = self.supervisor.update(batch_size)
-            if sup_info:
-                losses["supervisor"] = sup_info
-
-        return losses
+    # Only train supervisor after local agents have meaningful gradients
+    min_local_buf = min(a.buffer.size for a in self.agents.values())
+    if min_local_buf >= 5000:  # ~200 episodes
+        sup_info = self.supervisor.update(batch_size)
+        if sup_info:
+            losses["supervisor"] = sup_info
+    return losses
 
     # ------------------------------------------------------------------
     def compute_local_rewards(self, info: dict) -> np.ndarray:
