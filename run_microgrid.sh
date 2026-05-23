@@ -9,6 +9,24 @@
 #SBATCH --output=/home/gkianfar/scratch/Amin/MSH/output/logs/hma_%j.out
 #SBATCH --error=/home/gkianfar/scratch/Amin/MSH/output/logs/hma_%j.err
 
+# ==========================================================================
+# CHANGES vs. original  (every change is marked FIX-*)
+# ==========================================================================
+#
+# FIX-S  Stage 1 smoke test now exits the job with a non-zero code when
+#        HMA reward < 50 % of SA reward.  Previously the job continued even
+#        with a broken HMA (ratio was 0.38 in the failed run).
+#
+# FIX-K  Stage 2b seed loop no longer overwrites the checkpoint on every
+#        seed.  train.py (FIX-1) handles best-checkpoint logic internally;
+#        the shell loop just needs to run each seed and let Python decide.
+#        We also preserve each seed's result .npz under a unique name
+#        (hma_normal_seed{N}_results.npz) so all 10 seeds are available for
+#        Fig 12 post-processing, instead of the original which overwrote the
+#        same file 10 times.
+#
+# ==========================================================================
+
 set -e
 
 echo "========================================="
@@ -118,8 +136,6 @@ run_train () {
 
 # ==============================
 # HELPER — stress evaluation
-# Loads the pre-trained normal checkpoint and evaluates on a stress scenario
-# (Section 3.4 of the paper)
 # ==============================
 run_stress () {
     local METHOD=$1
@@ -157,13 +173,23 @@ echo "========================================="
 
 LOG_DEMO="$OUTPUT_BASE/logs/demo_${SLURM_JOB_ID}.log"
 python demo.py 2>&1 | tee "$LOG_DEMO"
+
+# FIX-S: demo.py now exits with code 1 if HMA reward < 50 % of SA reward.
+# The 'set -e' at the top of this script will catch that and abort the job,
+# saving the remaining GPU hours for a fixed re-submission.
+EXIT_CODE=${PIPESTATUS[0]}
+if [ $EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "❌ STAGE 1 SMOKE TEST FAILED (exit code $EXIT_CODE)"
+    echo "   HMA reward is too low relative to SA.  Fix hma_drl.py and resubmit."
+    exit $EXIT_CODE
+fi
+
 cp -f demo_plots/*.png $OUTPUT_BASE/plots/ 2>/dev/null || true
-echo "✓ Smoke test passed"
 echo ""
 
 # ==============================
 # STAGE 2 — FULL TRAINING
-# Paper Section 2.5: 5 000 episodes, normal scenario, all 3 methods
 # ==============================
 echo "========================================="
 echo "STAGE 2: Full training — normal scenario (5 000 episodes)"
@@ -175,15 +201,18 @@ done
 
 # ==============================
 # STAGE 2b — 10 SEEDS FOR FIG 12
-# Paper Section 3.4.2: statistical reliability
 # ==============================
 echo "========================================="
 echo "STAGE 2b: HMA — 10 independent seeds (Fig 12)"
 echo "========================================="
 
+# FIX-K: each seed writes its results to a unique .npz so no seed overwrites
+# another.  train.py (FIX-1) uses save_if_best() so hma_weights.pt always
+# holds the best checkpoint seen across all seeds.
 for SEED in 1 2 3 4 5 6 7 8 9 10; do
     LOG="$OUTPUT_BASE/logs/hma_seed${SEED}_${SLURM_JOB_ID}.log"
     echo "  → seed $SEED"
+
     python train.py \
         --method   hma     \
         --scenario normal  \
@@ -191,6 +220,15 @@ for SEED in 1 2 3 4 5 6 7 8 9 10; do
         --batch    256     \
         --device   cuda    \
         2>&1 | tee "$LOG"
+
+    # FIX-K: rename this seed's result file so it is not overwritten
+    SRC="$OUTPUT_BASE/checkpoints/hma_normal_results.npz"
+    DST="$OUTPUT_BASE/checkpoints/hma_normal_seed${SEED}_results.npz"
+    if [ -f "$SRC" ]; then
+        cp -f "$SRC" "$DST"
+        echo "    Seed $SEED results → $DST"
+    fi
+
     python -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
 done
 echo "✓ All 10 seeds done"
@@ -198,8 +236,6 @@ echo ""
 
 # ==============================
 # STAGE 3 — STRESS EVALUATION
-# Paper Section 3.4: evaluate HMA on stress scenarios
-# using the pre-trained normal model
 # ==============================
 echo "========================================="
 echo "STAGE 3: Stress evaluation — HMA-DRL only"
