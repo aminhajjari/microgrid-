@@ -1,13 +1,26 @@
 """
-demo.py
+demo.py  (FIXED)
 =======
 Quick end-to-end smoke test (60 episodes per method).
 Prints a comparison table and saves 4 plots.
+
+==========================================================================
+CHANGE vs. original  (FIX-S)
+==========================================================================
+
+FIX-S  Added a quality gate after the smoke-test table.
+       Original always printed "✓ Smoke test passed" even when HMA
+       reward was 36 vs SA reward of 95 (a 62 % gap seen in the failed
+       run).  The gate now checks that HMA reward is at least
+       SMOKE_HMA_MIN_FRACTION (0.50) of the SA reward, and prints a
+       prominent warning — and exits with code 1 — if it is not.
+       This lets the SLURM job catch a broken HMA before burning 10 h.
 
 Run:
     python demo.py
 """
 
+import sys
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -24,6 +37,9 @@ BATCH_SIZE = 128
 DEVICE     = "cpu"
 OUT_DIR    = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
+
+# FIX-S: HMA must reach at least this fraction of SA reward to pass smoke test
+SMOKE_HMA_MIN_FRACTION = 0.50
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +81,6 @@ def run_one(method: str, n_ep: int = N_EPISODES):
                 local_rewards = ctrl.compute_local_rewards(info)
                 ctrl.store_transitions(obs, action, local_rewards,
                                        reward, nobs, done, prev, omega)
-                
             elif isinstance(ctrl, FlatMADRL):
                 ctrl.store_transitions(obs, action,
                                        np.full(4, reward / 4), nobs, done)
@@ -104,7 +119,6 @@ def run_one(method: str, n_ep: int = N_EPISODES):
 def make_plots(results):
     colors = {"hma": "#E84855", "flat": "#FF9F1C", "sa": "#2EC4B6"}
 
-    # Convergence
     fig, ax = plt.subplots(figsize=(9, 4))
     for r in results:
         rw = np.array(r["rewards"])
@@ -112,10 +126,8 @@ def make_plots(results):
         ax.plot(sm, color=colors[r["method"]], lw=2, label=r["label"])
     ax.set_xlabel("Episode"); ax.set_ylabel("Episodic Reward")
     ax.set_title("Training Convergence"); ax.legend(); ax.grid(alpha=0.3)
-    plt.tight_layout(); fig.savefig(OUT_DIR / "convergence.png", dpi=150)
-    plt.close()
+    plt.tight_layout(); fig.savefig(OUT_DIR / "convergence.png", dpi=150); plt.close()
 
-    # Cost bar
     fig, ax = plt.subplots(figsize=(6, 4))
     base = max(r["avg_cost"] for r in results) + 1e-9
     for r in results:
@@ -125,7 +137,6 @@ def make_plots(results):
     ax.grid(axis="y", alpha=0.3); plt.tight_layout()
     fig.savefig(OUT_DIR / "cost_reduction.png", dpi=150); plt.close()
 
-    # SOC trajectories
     fig, ax = plt.subplots(figsize=(9, 4))
     for r in results:
         ax.plot(r["soc_last"], color=colors[r["method"]], lw=2, label=r["label"])
@@ -134,7 +145,6 @@ def make_plots(results):
     ax.set_ylim(0, 1); ax.legend(); ax.grid(alpha=0.3); plt.tight_layout()
     fig.savefig(OUT_DIR / "soc_trajectories.png", dpi=150); plt.close()
 
-    # Box plots — FIX: use tick_labels (not deprecated labels)
     fig, ax = plt.subplots(figsize=(7, 4))
     data = [r["rewards"][-20:] for r in results]
     lbls = [r["label"] for r in results]
@@ -144,8 +154,7 @@ def make_plots(results):
         patch.set_facecolor(colors[r["method"]]); patch.set_alpha(0.7)
     ax.set_ylabel("Reward (last 20 episodes)")
     ax.set_title("Reward Variability"); ax.grid(axis="y", alpha=0.3)
-    plt.tight_layout(); fig.savefig(OUT_DIR / "reward_variability.png", dpi=150)
-    plt.close()
+    plt.tight_layout(); fig.savefig(OUT_DIR / "reward_variability.png", dpi=150); plt.close()
 
     print(f"Plots saved → {OUT_DIR}/")
 
@@ -169,6 +178,40 @@ def print_table(results):
 
 
 # ---------------------------------------------------------------------------
+# FIX-S: quality gate
+# ---------------------------------------------------------------------------
+def check_smoke_quality(results) -> bool:
+    """
+    Return True (pass) if HMA reward >= SMOKE_HMA_MIN_FRACTION * SA reward.
+    A soft warning is printed for any method below 0 reward.
+    """
+    by_method = {r["method"]: r for r in results}
+    sa_reward  = by_method.get("sa",  {}).get("avg_reward", 1.0)
+    hma_reward = by_method.get("hma", {}).get("avg_reward", -999)
+
+    if sa_reward <= 0:
+        print("  ⚠️  SA reward is non-positive — environment may have a bug.")
+        return False
+
+    ratio = hma_reward / sa_reward
+    if ratio < SMOKE_HMA_MIN_FRACTION:
+        print(
+            f"\n  ❌ SMOKE TEST FAILED\n"
+            f"     HMA avg_reward = {hma_reward:.1f}\n"
+            f"     SA  avg_reward = {sa_reward:.1f}\n"
+            f"     Ratio = {ratio:.2f} < required {SMOKE_HMA_MIN_FRACTION:.2f}\n"
+            f"\n"
+            f"     This usually means the supervisor reward signal or local\n"
+            f"     reward decomposition has a bug.  Check hma_drl.py before\n"
+            f"     submitting the full 5 000-episode job.\n"
+        )
+        return False
+
+    print("✓ Smoke test passed")
+    return True
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print(f"Running demo with {N_EPISODES} episodes per method …\n")
     results = []
@@ -181,3 +224,7 @@ if __name__ == "__main__":
     print_table(results)
     make_plots(results)
     print("\nAll done. Check plots/ for figures.")
+
+    # FIX-S: exit 1 if HMA smoke test fails so SLURM job catches it early
+    if not check_smoke_quality(results):
+        sys.exit(1)
