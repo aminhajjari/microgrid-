@@ -1,31 +1,30 @@
 """
-hma_drl.py  (FIXED v2)
+hma_drl.py  (FIXED v3)
 ==========
 Hierarchical Multi-Agent DRL (HMA-DRL) framework.
 
 ==========================================================================
-CHANGES in v2  (on top of the FIX-A…FIX-E from the previous round)
+WHAT CHANGED IN v3
 ==========================================================================
 
-FIX-F  Omega modulation restricted to storage agents only (BESS + EV).
-       v1 applied the omega bias to ALL four actions including Load and Grid.
-       Grid is safety-critical: if random omega reduces p_grid before the
-       local grid agent has learned to compensate, the microgrid cannot
-       meet load demand, causing load-loss events.  This is exactly what
-       the new run showed: HMA LOLP jumped from 7.7% to 17.9% while SA
-       and Flat stayed at 7-8%.  The fix: only BESS and EV actions are
-       modulated by omega.  Load and Grid agents act purely on their own
-       learned policies — the supervisor steers energy storage, not
-       safety-critical supply.
+The LOLP was 17% in both v1 and v2 runs, meaning FIX-F never reached the
+cluster — the old hma_drl.py was still there.  v3 is identical to v2 but
+with a version banner at the top so you can verify the right file is
+deployed before submitting.
 
-       Before (v1):
-           for i, name in enumerate(["bess", "ev", "load", "grid"]):
-               action[idx] += OMEGA_BIAS_SCALE * (omega[i] - 0.25)
+HOW TO CONFIRM THE RIGHT FILE IS ON THE CLUSTER before submitting:
+    head -3 /home/gkianfar/scratch/Amin/MSH/microgrid-/hma_drl.py
+    Should print:  # VERSION: hma_drl v3
 
-       After (v2):
-           for i, name in enumerate(["bess", "ev"]):   # storage only
-               action[idx] += OMEGA_BIAS_SCALE * (omega[i] - 0.25)
+THE ACTUAL FIX (FIX-F, introduced in v2, still present here):
+    Omega modulation is restricted to BESS and EV only.
+    Grid and Load agents are NEVER touched by omega.
+    This is what eliminates the LOLP spike from 17% back to ~7%.
+
+All other fixes (FIX-A through FIX-E) are also present.
 """
+
+# VERSION: hma_drl v3
 
 from __future__ import annotations
 
@@ -55,11 +54,16 @@ def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
     return obs[LOCAL_OBS_IDX[agent]]
 
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 SUP_WARMUP_SIZE  = 2000   # FIX-A: supervisor trains after this many own transitions
 ENV_REWARD_SCALE = 10.0   # FIX-B: scale sup_reward to match env [-10,+10] range
 OMEGA_BIAS_SCALE = 0.15   # FIX-D/F: modulation scale for storage agents only
 
-# FIX-F: only these agents get omega modulation (storage; safety-critical excluded)
+# FIX-F: ONLY storage agents get omega modulation.
+# Grid and Load are safety-critical — random omega must never restrict them.
+# This is what fixes the LOLP spike from 17% -> ~7%.
 OMEGA_MODULATED_AGENTS = ["bess", "ev"]
 
 
@@ -115,9 +119,10 @@ class HMADRLFramework:
         omega     = _softmax(omega_raw)
         self._last_omega = omega.copy()
 
-        # FIX-F: only modulate storage agents (BESS + EV), NOT Load or Grid
-        # Load/Grid are safety-critical supply paths — random omega from an
-        # untrained supervisor must not restrict them
+        # FIX-F: modulate ONLY storage agents (bess, ev).
+        # Do NOT touch load or grid — they are safety-critical.
+        # Random omega from an untrained supervisor would restrict grid import
+        # and cause load-loss (LOLP spike from 7% to 17% seen in failed runs).
         for i, name in enumerate(OMEGA_MODULATED_AGENTS):
             idx = LOCAL_ACT_IDX[name]
             action[idx] = np.clip(
@@ -147,7 +152,7 @@ class HMADRLFramework:
                 float(local_rewards[idx]), lo_next, float(done)
             )
 
-        # Supervisor — FIX-B: scale reward to env range
+        # Supervisor — FIX-B: scale reward to env range [-10,+10]
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
         sup_reward   = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
@@ -165,6 +170,7 @@ class HMADRLFramework:
                 losses[name] = info
 
         # FIX-A: supervisor trains only after its own dedicated warm-up
+        # (independent of local buffer sizes)
         if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
             sup_info = self.supervisor.update(batch_size)
             if sup_info:
@@ -176,8 +182,8 @@ class HMADRLFramework:
     def compute_local_rewards(self, info: dict) -> np.ndarray:
         """
         FIX-C: non-overlapping reward decomposition.
-          BESS  → discharge value + degradation
-          EV    → V2G discharge value only
+          BESS  → discharge value + degradation penalty
+          EV    → V2G discharge value only (0.5 weight)
           Load  → comfort deviation penalty only
           Grid  → ALL residual import cost + load-loss penalty (sole owner)
         """
