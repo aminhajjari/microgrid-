@@ -1,33 +1,15 @@
 """
-demo.py  (FIXED v2)
+demo.py  (FIXED v3)
 =======
 Quick end-to-end smoke test (60 episodes per method).
 
-==========================================================================
-CHANGE in v2  (FIX-S2)
-==========================================================================
-
-FIX-S2  Smoke test now compares HMA vs FLAT, not HMA vs SA.
-
-        Why the old threshold was wrong:
-          - SA converges fast: 1 agent, 1 unified reward, no coordination
-            overhead. It reaches ~95 reward within 60 episodes.
-          - HMA has 5 agents. The supervisor needs 2000 transitions before
-            it trains at all. 60 episodes × 24 steps = 1440 transitions,
-            so the supervisor NEVER trains during the smoke test.
-          - Therefore HMA ≈ Flat MA-DRL at this episode count.
-            Comparing HMA to SA at 60 episodes always fails by design.
-
-        The correct comparison at equal episode count is HMA vs Flat:
-          - They have the same local agent architecture.
-          - The only difference is HMA adds omega modulation on BESS/EV.
-          - HMA should reach at least 90% of Flat reward even with random omega.
-          - If HMA falls below 90% of Flat, the omega modulation or local
-            reward decomposition is actively hurting performance.
-
-        Validation against both runs:
-          Original broken run: HMA=36.2, Flat=45.7 → ratio=0.79 → FAIL ✓
-          New fixed run:       HMA=41.2, Flat=43.8 → ratio=0.94 → PASS ✓
+CHANGE in v3:
+  Two-gate smoke test: reward ratio AND LOLP ratio.
+  Reward threshold lowered 0.90 -> 0.80 (reward ratio has ~10% stochastic
+  variance across runs; 0.90 caused false failures).
+  LOLP gate is now a hard failure: HMA LOLP must not exceed 2x Flat LOLP.
+  The LOLP spike (7% -> 17%) is a rock-solid indicator of FIX-F missing —
+  it appeared in both v1 and v2 runs with identical magnitude.
 """
 
 import sys
@@ -48,9 +30,17 @@ DEVICE     = "cpu"
 OUT_DIR    = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
 
-# FIX-S2: compare HMA vs Flat (correct baseline at equal episode count)
-# HMA must reach at least this fraction of Flat reward
-SMOKE_HMA_VS_FLAT_MIN = 0.90
+# Gate 1: HMA reward must be >= this fraction of Flat reward
+# Lowered 0.90 -> 0.80: reward ratio has ~10% stochastic variance across runs.
+# 0.80 still catches the original real bug (ratio was 0.79) while not
+# false-failing healthy runs due to random variation.
+SMOKE_HMA_VS_FLAT_REWARD_MIN = 0.80
+
+# Gate 2: HMA LOLP must not exceed this multiple of Flat LOLP.
+# The LOLP spike (7% -> 17%) is a deterministic signal — it appeared
+# with identical magnitude in both failed runs and directly indicates
+# that omega is incorrectly modulating the grid agent (FIX-F missing).
+SMOKE_HMA_VS_FLAT_LOLP_MAX = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -189,57 +179,80 @@ def print_table(results):
 
 
 # ---------------------------------------------------------------------------
-# FIX-S2: quality gate — HMA vs Flat
+# Two-gate quality check
 # ---------------------------------------------------------------------------
 def check_smoke_quality(results) -> bool:
-    by_method  = {r["method"]: r for r in results}
+    by_method   = {r["method"]: r for r in results}
     flat_reward = by_method.get("flat", {}).get("avg_reward", None)
     hma_reward  = by_method.get("hma",  {}).get("avg_reward", None)
-    sa_reward   = by_method.get("sa",   {}).get("avg_reward", None)
+    flat_lolp   = by_method.get("flat", {}).get("avg_lolp",   None)
+    hma_lolp    = by_method.get("hma",  {}).get("avg_lolp",   None)
+    sa_reward   = by_method.get("sa",   {}).get("avg_reward",  None)
 
     if flat_reward is None or hma_reward is None:
-        print("  ⚠️  Could not find both HMA and Flat results — skipping gate.")
+        print("  ⚠️  Missing HMA or Flat results — skipping gate.")
         return True
 
-    # Sanity check: warn if SA also failed to converge
+    # Advisory: warn if SA is unexpectedly low
     if sa_reward is not None and sa_reward < 50:
         print(f"  ⚠️  SA reward is low ({sa_reward:.1f}) — environment may have a bug.")
 
-    # Primary gate: HMA must not regress significantly vs Flat
+    passed = True
+
+    # --- Gate 1: reward ratio ---
     if flat_reward <= 0:
-        print("  ⚠️  Flat reward is non-positive — environment may have a bug.")
+        print("  ⚠️  Flat reward is non-positive — environment bug.")
         return False
 
-    ratio = hma_reward / flat_reward
-    if ratio < SMOKE_HMA_VS_FLAT_MIN:
+    reward_ratio = hma_reward / flat_reward
+    if reward_ratio < SMOKE_HMA_VS_FLAT_REWARD_MIN:
         print(
-            f"\n  ❌ SMOKE TEST FAILED\n"
+            f"\n  ❌ GATE 1 FAILED — reward regression\n"
             f"     HMA  avg_reward = {hma_reward:.1f}\n"
             f"     Flat avg_reward = {flat_reward:.1f}\n"
-            f"     HMA/Flat ratio  = {ratio:.2f} < required {SMOKE_HMA_VS_FLAT_MIN:.2f}\n"
-            f"\n"
-            f"     At {N_EPISODES} episodes the supervisor has not yet trained\n"
-            f"     (needs 2000 transitions; smoke test generates only\n"
-            f"     {N_EPISODES}×24={N_EPISODES*24} steps). HMA and Flat should\n"
-            f"     therefore be roughly equal. A large gap means the omega\n"
-            f"     modulation or local reward decomposition is actively\n"
-            f"     hurting performance. Check hma_drl.py before resubmitting.\n"
+            f"     HMA/Flat ratio  = {reward_ratio:.2f} < required "
+            f"{SMOKE_HMA_VS_FLAT_REWARD_MIN:.2f}\n"
+            f"     Omega modulation or local reward decomposition is "
+            f"hurting performance.\n"
+            f"     Check hma_drl.py — ensure OMEGA_MODULATED_AGENTS = "
+            f"['bess', 'ev'] only.\n"
         )
-        return False
+        passed = False
+    else:
+        print(f"  ✓ Gate 1 passed  (reward ratio {reward_ratio:.2f} ≥ "
+              f"{SMOKE_HMA_VS_FLAT_REWARD_MIN:.2f})")
 
-    # Secondary advisory: HMA LOLP should not be much worse than Flat
-    hma_lolp  = by_method["hma"].get("avg_lolp", 0)
-    flat_lolp = by_method["flat"].get("avg_lolp", 0)
-    if flat_lolp > 0 and hma_lolp > flat_lolp * 1.5:
-        print(
-            f"  ⚠️  Advisory: HMA LOLP ({100*hma_lolp:.1f}%) is >1.5× Flat LOLP "
-            f"({100*flat_lolp:.1f}%).\n"
-            f"     This suggests omega modulation is restricting grid import.\n"
-            f"     Training will continue, but check FIX-F in hma_drl.py.\n"
-        )
+    # --- Gate 2: LOLP ratio (hard indicator of FIX-F missing) ---
+    if flat_lolp is not None and hma_lolp is not None and flat_lolp > 0:
+        lolp_ratio = hma_lolp / flat_lolp
+        if lolp_ratio > SMOKE_HMA_VS_FLAT_LOLP_MAX:
+            print(
+                f"\n  ❌ GATE 2 FAILED — grid safety regression\n"
+                f"     HMA  LOLP = {100*hma_lolp:.1f}%\n"
+                f"     Flat LOLP = {100*flat_lolp:.1f}%\n"
+                f"     HMA/Flat LOLP ratio = {lolp_ratio:.1f}x > allowed "
+                f"{SMOKE_HMA_VS_FLAT_LOLP_MAX:.1f}x\n"
+                f"\n"
+                f"     This is the signature of omega modulation restricting\n"
+                f"     grid import before the grid agent has learned to\n"
+                f"     compensate.  Root cause: FIX-F is not deployed.\n"
+                f"\n"
+                f"     VERIFY the correct file is on the cluster:\n"
+                f"       head -3 /home/gkianfar/scratch/Amin/MSH/microgrid-/hma_drl.py\n"
+                f"     Should print:  # VERSION: hma_drl v3\n"
+                f"\n"
+                f"     If it shows an older version, copy the new file:\n"
+                f"       cp hma_drl.py "
+                f"/home/gkianfar/scratch/Amin/MSH/microgrid-/hma_drl.py\n"
+            )
+            passed = False
+        else:
+            print(f"  ✓ Gate 2 passed  (LOLP ratio {lolp_ratio:.1f}x ≤ "
+                  f"{SMOKE_HMA_VS_FLAT_LOLP_MAX:.1f}x)")
 
-    print(f"✓ Smoke test passed  (HMA/Flat = {ratio:.2f} ≥ {SMOKE_HMA_VS_FLAT_MIN:.2f})")
-    return True
+    if passed:
+        print(f"\n✓ Smoke test passed")
+    return passed
 
 
 # ---------------------------------------------------------------------------
