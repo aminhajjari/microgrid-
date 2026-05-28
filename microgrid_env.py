@@ -258,7 +258,7 @@ class MicrogridEnv(gym.Env):
             -self.ALPHA * max(0, self.SOC_BESS_MIN - soc_new)
             -self.BETA  * max(0, soc_new - self.SOC_BESS_MAX)
             -self.ZETA  * abs(p_flex_actual - p_flex_desired)
-            -2.0        * load_loss
+            
         )
 
         # Weighted total  (Eq. 9)
