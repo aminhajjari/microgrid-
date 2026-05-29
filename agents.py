@@ -175,9 +175,10 @@ class PrioritizedReplayBuffer:
             priority = (abs(td_err) + 1e-6) ** self.alpha
             self.tree.update(idx, priority)
 
-    def __len__(self):
+    @property
+    def size(self):
         return self.tree.size
-    
+
     def __len__(self):
         return self.tree.size
 
