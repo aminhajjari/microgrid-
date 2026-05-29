@@ -177,7 +177,9 @@ class PrioritizedReplayBuffer:
 
     def __len__(self):
         return self.tree.size
-
+    
+    def __len__(self):
+        return self.tree.size
 
 # ============================================================
 # Shared utilities
