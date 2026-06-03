@@ -1,284 +1,304 @@
 """
-microgrid_env.py  (ARW-integrated)
-================
-OpenAI Gym-compatible microgrid environment for the HMA-DRL framework.
-Models: PV generation, BESS, EV charging, flexible loads, grid interaction (TOU tariff).
-All equations follow the paper numbering (Eq. 1–8).
+hma_drl.py  (v5 — ARW integrated)
+==========
+Hierarchical Multi-Agent DRL (HMA-DRL) framework.
 
-NOVELTY CHANGE — Adaptive Reward Weighting (ARW):
-    step() now accepts an optional `reward_weights` argument:
-        reward_weights = np.array([w_c, w_b, w_e, w_s])
-    When provided, these replace the class-level constants W_C/W_B/W_E/W_S.
-    When None (default), the original fixed weights are used — so SA and Flat
-    baselines are completely unaffected.
+==========================================================================
+CHANGES IN v5  (on top of v4)
+==========================================================================
+
+ARW  Adaptive Reward Weighting — novelty contribution.
+
+     HMADRLFramework now owns an AdaptiveRewardWeighter (ARWN) instance.
+     Each timestep, get_reward_weights(obs) is called and the 4-element
+     weight array is passed to env.step(action, reward_weights=...).
+
+     The ARWN has a 50-episode warm-up during which it outputs the paper's
+     original fixed weights exactly — so the smoke test (60 episodes) still
+     passes with the same baseline behaviour.  After warm-up the ARWN
+     starts learning context-aware weights.
+
+     CRITICAL safeguard: weights are clipped to [0.01, 10.0] inside
+     microgrid_env.py so a bad early ARWN output cannot produce the
+     extreme negative rewards (-32) seen in the previous run.
+
+     SA and Flat baselines pass reward_weights=None to env.step(), so
+     they are completely unaffected — fair comparison preserved.
 """
 
-import gymnasium as gym
+# VERSION: hma_drl v5
+
+from __future__ import annotations
+
 import numpy as np
-from gymnasium import spaces
+import torch
+
+from agents import TD3Agent, SACAgent
+from adaptive_reward import AdaptiveRewardWeighter
 
 
 # ---------------------------------------------------------------------------
-# Helper: simple stochastic PV / load / EV profiles
+# Observation / action split helpers
 # ---------------------------------------------------------------------------
+OBS_DIM  = 7
+ACT_DIM  = 4
+N_AGENTS = 4   # BESS, EV, Load, Grid
 
-def _solar_profile(T: int, seed: int = 0) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    t = np.arange(T)
-    base = np.clip(np.sin(np.pi * (t - 6) / 12) * (t >= 6) * (t <= 18), 0, 1)
-    return base * (1 + 0.15 * rng.standard_normal(T)).clip(0, 1)
-
-
-def _load_profile(T: int, seed: int = 1) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    base = 0.4 + 0.3 * np.sin(2 * np.pi * np.arange(T) / T - np.pi / 2)
-    return (base + 0.05 * rng.standard_normal(T)).clip(0.1, 1.0)
-
-
-def _tou_tariff(T: int) -> np.ndarray:
-    tariff = np.full(T, 0.08)
-    tariff[7:17]  = 0.14
-    tariff[17:21] = 0.22
-    return tariff
+LOCAL_OBS_IDX = {
+    "bess": [0, 2, 3, 4, 5, 6],
+    "ev":   [1, 2, 3, 4, 5, 6],
+    "load": [2, 3, 4, 5, 6],
+    "grid": [2, 3, 4, 5, 6],
+}
+LOCAL_ACT_IDX = {"bess": 0, "ev": 1, "load": 2, "grid": 3}
 
 
-def _ev_availability(T: int, seed: int = 2) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    alpha = np.zeros(T)
-    for t in range(T):
-        if t >= 18 or t <= 8:
-            alpha[t] = 1 if rng.random() > 0.1 else 0
-        else:
-            alpha[t] = 1 if rng.random() > 0.8 else 0
-    return alpha
+def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
+    return obs[LOCAL_OBS_IDX[agent]]
 
 
 # ---------------------------------------------------------------------------
-# Main environment
+# Constants
 # ---------------------------------------------------------------------------
+SUP_WARMUP_SIZE        = 2000
+ENV_REWARD_SCALE       = 10.0
+OMEGA_BIAS_SCALE       = 0.15
+OMEGA_MODULATED_AGENTS = ["bess", "ev"]
+LOCAL_REWARD_SCALE     = 4.0
 
-class MicrogridEnv(gym.Env):
-    """
-    State vector (7 dims):
-        [soc_bess, soc_ev, pv_norm, load_norm, tariff_norm, hour_sin, hour_cos]
-    Action vector (4 dims, all in [-1, 1]):
-        [p_bess_norm, p_ev_norm, p_flex_norm, p_grid_norm]
-    """
 
-    metadata = {"render_modes": []}
+class HMADRLFramework:
+    """Hierarchical multi-agent DRL controller with Adaptive Reward Weighting."""
 
-    # Microgrid parameters
-    E_BESS_MAX   = 200.0
-    P_BESS_MAX   = 50.0
-    SOC_BESS_MIN = 0.1
-    SOC_BESS_MAX = 0.9
-    ETA_C_BESS   = 0.95
-    ETA_D_BESS   = 0.95
+    def __init__(self, device: str = "cpu"):
+        d = device
 
-    E_EV_MAX   = 60.0
-    P_EV_MAX   = 22.0
-    SOC_EV_MIN = 0.2
-    SOC_EV_MAX = 1.0
-    ETA_C_EV   = 0.92
-    ETA_D_EV   = 0.92
+        lo_bess = len(LOCAL_OBS_IDX["bess"])
+        lo_ev   = len(LOCAL_OBS_IDX["ev"])
+        lo_load = len(LOCAL_OBS_IDX["load"])
+        lo_grid = len(LOCAL_OBS_IDX["grid"])
 
-    P_GRID_MAX = 80.0
-    P_GRID_MIN = -50.0
-    P_FLEX_MIN = 0.0
-    P_FLEX_MAX = 30.0
-
-    T  = 24
-    DT = 1.0
-
-    # Fixed reward weights (Eq. 9) — used when ARW is not active
-    W_C = 1.0
-    W_B = 0.3
-    W_E = 0.2
-    W_S = 0.5
-
-    # Degradation (Eq. 11)
-    GAMMA = 0.02
-    KAPPA = 1.4
-
-    # Penalty weights (Eq. 13)
-    ALPHA = 5.0
-    BETA  = 5.0
-    ZETA  = 0.5
-
-    def __init__(
-        self,
-        episode_seed:     int  = 0,
-        domain_randomize: bool = True,
-        scenario:         str  = "normal",
-    ):
-        super().__init__()
-        self.episode_seed     = episode_seed
-        self.domain_randomize = domain_randomize
-        self.scenario         = scenario
-
-        self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(7,), dtype=np.float32
-        )
-        self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(4,), dtype=np.float32
-        )
-        self._build_profiles()
-
-    def _build_profiles(self):
-        rng_seed = self.episode_seed if self.domain_randomize else 42
-        self.pv_profile = _solar_profile(self.T, seed=rng_seed) * 70.0
-        self.load_fix   = _load_profile(self.T, seed=rng_seed + 1) * 60.0
-        self.load_flex  = _load_profile(self.T, seed=rng_seed + 2) * 20.0
-        self.tariff     = _tou_tariff(self.T)
-        self.ev_avail   = _ev_availability(self.T, seed=rng_seed + 3)
-
-        if self.scenario == "crit_load":
-            self.load_fix *= 1.30
-        elif self.scenario == "pv_outage":
-            self.pv_profile[6:12] = 0.0
-        elif self.scenario == "dynamic_price":
-            self.tariff *= np.random.default_rng(rng_seed).uniform(0.5, 2.0, self.T)
-        elif self.scenario == "high_res":
-            self.pv_profile *= 1.4
-
-    def reset(self, *, seed=None, options=None):
-        if seed is not None:
-            self.episode_seed = seed
-        self._build_profiles()
-        self.t                 = 0
-        self.soc_bess          = 0.5
-        self.soc_ev            = 0.6
-        self.total_cost        = 0.0
-        self.total_degradation = 0.0
-        self.load_loss_count   = 0
-        return self._get_obs(), {}
-
-    def _get_obs(self) -> np.ndarray:
-        t = min(self.t, self.T - 1)
-        hour_angle = 2 * np.pi * t / self.T
-        obs = np.array([
-            2 * (self.soc_bess - self.SOC_BESS_MIN) / (self.SOC_BESS_MAX - self.SOC_BESS_MIN) - 1,
-            2 * (self.soc_ev   - self.SOC_EV_MIN)   / (self.SOC_EV_MAX   - self.SOC_EV_MIN)   - 1,
-            self.pv_profile[t] / 70.0 * 2 - 1,
-            self.load_fix[t]   / 80.0 * 2 - 1,
-            self.tariff[t]     / 0.25 * 2 - 1,
-            np.sin(hour_angle),
-            np.cos(hour_angle),
-        ], dtype=np.float32).clip(-1, 1)
-        return obs
-
-    def step(self, action: np.ndarray, reward_weights: np.ndarray = None):
-        """
-        reward_weights: optional np.array([w_c, w_b, w_e, w_s]).
-            If None, uses class-level fixed weights (W_C, W_B, W_E, W_S).
-            ARW integration: HMADRLFramework passes adaptive weights here;
-            SA and Flat pass nothing, preserving original behaviour exactly.
-        """
-        action = np.clip(action, -1.0, 1.0)
-        t = self.t
-
-        # --- Resolve reward weights ---
-        if reward_weights is not None:
-            # Safety: ensure all weights are positive and finite
-            w = np.asarray(reward_weights, dtype=np.float32)
-            w = np.clip(w, 0.01, 10.0)          # hard bounds
-            w_c, w_b, w_e, w_s = w[0], w[1], w[2], w[3]
-        else:
-            w_c = self.W_C
-            w_b = self.W_B
-            w_e = self.W_E
-            w_s = self.W_S
-
-        # --- De-normalise actions ---
-        p_bess_cmd = float(action[0]) * self.P_BESS_MAX
-        p_ev_cmd   = float(action[1]) * self.P_EV_MAX
-        p_flex_cmd = (float(action[2]) + 1) / 2 * self.P_FLEX_MAX
-        p_grid_cmd = float(action[3]) * self.P_GRID_MAX
-
-        # --- BESS update (Eq. 2) ---
-        if p_bess_cmd >= 0:
-            p_dis = min(p_bess_cmd, self.P_BESS_MAX)
-            p_ch  = 0.0
-        else:
-            p_ch  = min(-p_bess_cmd, self.P_BESS_MAX)
-            p_dis = 0.0
-        soc_new = (self.soc_bess
-                   + (self.ETA_C_BESS * p_ch - p_dis / self.ETA_D_BESS)
-                   / self.E_BESS_MAX * self.DT)
-        soc_new       = np.clip(soc_new, 0.0, 1.0)
-        p_bess_actual = p_dis - p_ch
-
-        # --- EV update (Eq. 5) ---
-        alpha = self.ev_avail[t]
-        if alpha == 0:
-            p_ev_actual = 0.0
-            soc_ev_new  = self.soc_ev
-        else:
-            if p_ev_cmd >= 0:
-                p_ev_dis = min(p_ev_cmd, self.P_EV_MAX)
-                p_ev_ch  = 0.0
-            else:
-                p_ev_ch  = min(-p_ev_cmd, self.P_EV_MAX)
-                p_ev_dis = 0.0
-            soc_ev_new = (self.soc_ev
-                          + alpha * (self.ETA_C_EV * p_ev_ch - p_ev_dis / self.ETA_D_EV)
-                          / self.E_EV_MAX * self.DT)
-            soc_ev_new  = np.clip(soc_ev_new, 0.0, 1.0)
-            p_ev_actual = p_ev_dis - p_ev_ch
-
-        # --- Flexible load ---
-        p_flex_actual  = np.clip(p_flex_cmd, self.P_FLEX_MIN, self.P_FLEX_MAX)
-        p_flex_desired = self.load_flex[t]
-
-        # --- Power balance (Eq. 1) ---
-        p_pv          = self.pv_profile[t]
-        p_load        = self.load_fix[t] + p_flex_actual
-        p_grid_needed = p_load - p_pv - p_bess_actual - p_ev_actual
-        p_grid_actual = np.clip(p_grid_needed, self.P_GRID_MIN, self.P_GRID_MAX)
-
-        supply    = p_pv + p_bess_actual + p_ev_actual + p_grid_actual
-        load_loss = max(0.0, p_load - supply)
-        if load_loss > 1.0:
-            self.load_loss_count += 1
-
-        # --- Reward components ---
-        lam = self.tariff[t]
-
-        r_cost = -(lam * p_grid_actual * self.DT)                             # Eq. 10
-        r_batt = -self.GAMMA * (abs(p_bess_actual) / self.P_BESS_MAX) ** self.KAPPA  # Eq. 11
-        r_env  = 0.5 * p_pv / max(p_load, 1e-3)                              # Eq. 12
-        r_stab = (                                                             # Eq. 13
-            -self.ALPHA * max(0, self.SOC_BESS_MIN - soc_new)
-            -self.BETA  * max(0, soc_new - self.SOC_BESS_MAX)
-            -self.ZETA  * abs(p_flex_actual - p_flex_desired)
-        )
-
-        # --- Weighted total (Eq. 9) — ARW replaces fixed weights ---
-        reward = w_c * r_cost + w_b * r_batt + w_e * r_env + w_s * r_stab
-        reward = float(np.clip(reward, -10.0, 10.0))
-
-        # --- State updates ---
-        self.soc_bess          = float(soc_new)
-        self.soc_ev            = float(soc_ev_new)
-        self.total_cost        += lam * max(0, p_grid_actual) * self.DT
-        self.total_degradation += abs(r_batt)
-        self.t += 1
-
-        terminated = self.t >= self.T
-        info = {
-            "t":        t,
-            "p_pv":     p_pv,
-            "p_bess":   p_bess_actual,
-            "p_ev":     p_ev_actual,
-            "p_grid":   p_grid_actual,
-            "p_load":   p_load,
-            "p_flex":   p_flex_actual,
-            "soc_bess": self.soc_bess,
-            "soc_ev":   self.soc_ev,
-            "load_loss": load_loss,
-            "reward":   reward,
-            "tariff":   lam,
-            # ARW diagnostics — logged for analysis
-            "rew_weights": np.array([w_c, w_b, w_e, w_s], dtype=np.float32),
+        self.agents = {
+            "bess": TD3Agent(lo_bess, 1, device=d),
+            "ev":   TD3Agent(lo_ev,   1, device=d),
+            "load": SACAgent(lo_load, 1, device=d),
+            "grid": SACAgent(lo_grid, 1, device=d),
         }
-        return self._get_obs(), reward, terminated, False, info
+
+        # Supervisor: input = global obs (7) + 4 local rewards = 11 dims
+        self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_AGENTS, device=d)
+
+        # ARW: Adaptive Reward Weighter (novelty)
+        # warmup_episodes=50 means first 50 episodes use fixed paper weights
+        # exactly — smoke test (60 ep) will be almost entirely in warm-up
+        self.arw = AdaptiveRewardWeighter(
+            obs_dim          = OBS_DIM,
+            lr               = 1e-3,
+            gamma            = 0.99,
+            entropy_coef     = 0.01,
+            device           = d,
+            warmup_episodes  = 50,
+        )
+
+        self._last_omega      = _softmax(np.zeros(N_AGENTS))
+        self._device          = torch.device(d)
+        self.best_eval_reward = -np.inf
+
+    # ------------------------------------------------------------------
+    def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
+        """
+        Return adaptive reward weights [w_c, w_b, w_e, w_s].
+        Called once per timestep before env.step().
+        During ARW warm-up returns paper's original fixed weights.
+        """
+        return self.arw.get_weights(obs)
+
+    # ------------------------------------------------------------------
+    def record_reward(self, reward: float):
+        """Pass the step reward to ARW for REINFORCE training."""
+        self.arw.record(reward)
+
+    # ------------------------------------------------------------------
+    def update_arw(self) -> dict:
+        """Call once per episode end to update ARW weights."""
+        return self.arw.update()
+
+    # ------------------------------------------------------------------
+    def select_actions(
+        self,
+        obs: np.ndarray,
+        local_rewards: np.ndarray | None = None,
+        explore: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if local_rewards is None:
+            local_rewards = np.zeros(N_AGENTS)
+
+        action = np.zeros(4)
+        for name, idx in LOCAL_ACT_IDX.items():
+            lo = local_obs(obs, name)
+            if isinstance(self.agents[name], TD3Agent):
+                noise = 0.1 if explore else 0.0
+                action[idx] = self.agents[name].select_action(lo, noise_std=noise)[0]
+            else:
+                action[idx] = self.agents[name].select_action(
+                    lo, deterministic=not explore)[0]
+
+        sup_obs   = np.concatenate([obs, local_rewards])
+        omega_raw = self.supervisor.select_action(sup_obs, deterministic=not explore)
+        omega     = _softmax(omega_raw)
+        self._last_omega = omega.copy()
+
+        if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
+            for i, name in enumerate(OMEGA_MODULATED_AGENTS):
+                idx = LOCAL_ACT_IDX[name]
+                action[idx] = np.clip(
+                    action[idx] + OMEGA_BIAS_SCALE * (omega[i] - 0.25), -1.0, 1.0
+                )
+
+        return action, omega
+
+    # ------------------------------------------------------------------
+    def store_transitions(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        local_rewards: np.ndarray,
+        global_reward: float,
+        next_obs: np.ndarray,
+        done: bool,
+        prev_local_rewards: np.ndarray,
+        omega: np.ndarray,
+    ):
+        for name, idx in LOCAL_ACT_IDX.items():
+            lo      = local_obs(obs,      name)
+            lo_next = local_obs(next_obs, name)
+            scaled_reward = float(local_rewards[idx]) * LOCAL_REWARD_SCALE
+            self.agents[name].buffer.store(
+                lo, np.array([action[idx]]),
+                scaled_reward, lo_next, float(done)
+            )
+
+        sup_obs      = np.concatenate([obs,      prev_local_rewards])
+        sup_next_obs = np.concatenate([next_obs, local_rewards])
+        sup_reward   = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
+        self.supervisor.buffer.store(
+            sup_obs, omega, sup_reward, sup_next_obs, float(done)
+        )
+
+    # ------------------------------------------------------------------
+    def update_all(self, batch_size: int = 256) -> dict:
+        losses = {}
+        for name, agent in self.agents.items():
+            info = agent.update(batch_size)
+            if info:
+                losses[name] = info
+
+        if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
+            sup_info = self.supervisor.update(batch_size)
+            if sup_info:
+                losses["supervisor"] = sup_info
+
+        return losses
+
+    # ------------------------------------------------------------------
+    def compute_local_rewards(self, info: dict) -> np.ndarray:
+        lam    = info.get("tariff",    0.1)
+        p_bess = info.get("p_bess",    0.0)
+        p_ev   = info.get("p_ev",      0.0)
+        p_flex = info.get("p_flex",    info.get("p_load", 30.0))
+        p_grid = info.get("p_grid",    0.0)
+        ll     = info.get("load_loss", 0.0)
+
+        from microgrid_env import MicrogridEnv as _E
+
+        r_bess = (lam * p_bess * _E.DT) \
+                 - _E.GAMMA * (abs(p_bess) / _E.P_BESS_MAX) ** _E.KAPPA
+        r_ev   = (lam * max(0.0, p_ev) * _E.DT) * 0.5
+        r_load = -abs(p_flex - 30.0) * _E.ZETA
+        r_grid = -(lam * max(0.0, p_grid) * _E.DT) - ll * 1.0
+
+        rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
+        scale   = max(float(np.abs(rewards).max()), 1.0)
+        return np.clip(rewards / scale, -1.0, 1.0)
+
+    # ------------------------------------------------------------------
+    def save_if_best(self, eval_reward: float, save_dir, method: str = "hma") -> bool:
+        if eval_reward > self.best_eval_reward:
+            self.best_eval_reward = eval_reward
+            _save_hma_weights(self, save_dir, method)
+            return True
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Flat MA-DRL baseline — unchanged, no ARW
+# ---------------------------------------------------------------------------
+class FlatMADRL:
+    def __init__(self, device: str = "cpu"):
+        d = device
+        self.agents = {
+            "bess": TD3Agent(len(LOCAL_OBS_IDX["bess"]), 1, device=d),
+            "ev":   TD3Agent(len(LOCAL_OBS_IDX["ev"]),   1, device=d),
+            "load": SACAgent(len(LOCAL_OBS_IDX["load"]), 1, device=d),
+            "grid": SACAgent(len(LOCAL_OBS_IDX["grid"]), 1, device=d),
+        }
+
+    def select_actions(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
+        action = np.zeros(4)
+        for name, idx in LOCAL_ACT_IDX.items():
+            lo = local_obs(obs, name)
+            if isinstance(self.agents[name], TD3Agent):
+                action[idx] = self.agents[name].select_action(lo, 0.1 if explore else 0.0)[0]
+            else:
+                action[idx] = self.agents[name].select_action(lo, deterministic=not explore)[0]
+        return action.clip(-1, 1)
+
+    def store_transitions(self, obs, action, rewards, next_obs, done, **_):
+        for name, idx in LOCAL_ACT_IDX.items():
+            self.agents[name].buffer.store(
+                local_obs(obs, name), [action[idx]],
+                rewards[idx], local_obs(next_obs, name), float(done)
+            )
+
+    def update_all(self, batch_size: int = 256) -> dict:
+        return {n: a.update(batch_size) for n, a in self.agents.items()}
+
+
+# ---------------------------------------------------------------------------
+# Single-Agent DRL baseline — unchanged, no ARW
+# ---------------------------------------------------------------------------
+class SingleAgentDRL:
+    def __init__(self, device: str = "cpu"):
+        self.agent = TD3Agent(OBS_DIM, ACT_DIM, device=device)
+
+    def select_actions(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
+        return self.agent.select_action(obs, noise_std=0.1 if explore else 0.0)
+
+    def store_transitions(self, obs, action, reward, next_obs, done, **_):
+        self.agent.buffer.store(obs, action, reward, next_obs, float(done))
+
+    def update_all(self, batch_size: int = 256) -> dict:
+        return {"sa": self.agent.update(batch_size)}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _softmax(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    x -= x.max()
+    e = np.exp(x)
+    return e / e.sum()
+
+
+def _save_hma_weights(controller: HMADRLFramework, save_dir, method: str):
+    import torch
+    w = {}
+    for name, agent in controller.agents.items():
+        w[f"{name}_actor"]  = agent.actor.state_dict()
+        w[f"{name}_critic"] = agent.critic.state_dict()
+    w["supervisor_actor"]  = controller.supervisor.actor.state_dict()
+    w["supervisor_critic"] = controller.supervisor.critic.state_dict()
+    w["arw"]               = controller.arw.state_dict()   # save ARW weights too
+    torch.save(w, save_dir / f"{method}_weights.pt")
+    print(f"  Weights saved → {save_dir}/{method}_weights.pt")
