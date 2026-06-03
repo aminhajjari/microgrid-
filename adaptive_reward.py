@@ -160,10 +160,10 @@ class AdaptiveRewardWeighter:
         std = weight_means.detach() * 0.05 + 1e-6
         noise = torch.randn_like(weight_means, device=self.device) * std
         # Sample weights and clamp to avoid zero
-        weights_sampled = (weight_means + noise).clamp(min=0.01)
-
-        # 🔥 IMPORTANT: renormalize so sum stays constant
+        weights_sampled = weight_means + noise
+        weights_sampled = weights_sampled.clamp(min=0.01)
         weights_sampled = weights_sampled / weights_sampled.sum() * WEIGHT_SCALE
+        weights_sampled = weights_sampled.clamp(min=0.01)
 
         # Build distribution for REINFORCE
         dist = torch.distributions.Normal(weight_means, std)
