@@ -1,28 +1,26 @@
 """
-train.py  (FIXED)
+train.py  (v5 — ARW integrated)
 ========
 Training loop for SA-DRL, FMA-DRL, and HMA-DRL.
 
 ==========================================================================
-CHANGES vs. original  (every change is marked FIX-*)
+CHANGES vs. v4  (every change is marked ARW-*)
 ==========================================================================
 
-FIX-1  Best-checkpoint saving.
-       Original always saved weights at the end of training (save_weights).
-       For multi-seed runs this overwrote good seeds with bad ones.
-       Fix: after the greedy evaluation block, call controller.save_if_best()
-       for HMA, or a simple best-reward tracker for SA/Flat, so the file on
-       disk always holds the best weights seen across all seeds.
+ARW-1  train_episode() now calls get_reward_weights(obs) before env.step()
+       for HMA, passing adaptive weights to the environment.
+       SA and Flat call env.step(action) with no weights — identical to v4.
 
-FIX-2  Divergence early-warning.
-       If HMA's 500-episode rolling average stays below DIVERGENCE_THRESHOLD
-       (-20.0) for two consecutive report windows, print a prominent warning
-       so the user can decide whether to kill the job rather than burn H100
-       time on a doomed seed.
+ARW-2  record_reward() called after each env.step() for HMA, feeding the
+       scalar reward into the REINFORCE buffer of the AdaptiveRewardWeighter.
 
-FIX-3  save_weights / load_weights consolidated.
-       Moved weight I/O into hma_drl.py (_save_hma_weights) and kept only
-       thin wrappers here for SA/Flat, so both paths stay in sync.
+ARW-3  update_arw() called once per episode end for HMA, performing one
+       REINFORCE gradient step on the AdaptiveRewardWeightNetwork.
+
+ARW-4  load_weights() now loads ARW weights from checkpoint when present
+       (backwards compatible — old checkpoints without 'arw' key still load).
+
+ARW-5  summary dict includes avg_arw_loss for logging/plotting.
 """
 
 import argparse
@@ -42,39 +40,44 @@ from hma_drl import HMADRLFramework, FlatMADRL, SingleAgentDRL, _softmax, _save_
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-WARMUP_STEPS         = 2000    # Section 2.5
-DIVERGENCE_THRESHOLD = -20.0   # FIX-2: warn if HMA avg reward stays below this
-REPORT_WINDOW        = 50      # episodes used for rolling average in log lines
+WARMUP_STEPS         = 2000
+DIVERGENCE_THRESHOLD = -20.0
+REPORT_WINDOW        = 50
 
 
 # ---------------------------------------------------------------------------
-# Warm-up helper  — identical to original
+# Warm-up helper
 # ---------------------------------------------------------------------------
 def warmup_buffer(env, controller, steps: int = WARMUP_STEPS):
     """Fill replay buffers with random transitions before training starts."""
     obs, _ = env.reset()
     for _ in range(steps):
         action = env.action_space.sample()
-        nobs, rew, done, _, info = env.step(action)
 
         if isinstance(controller, HMADRLFramework):
+            # ARW-1: use fixed paper weights during warm-up (arw is in warm-up too)
+            rw   = controller.get_reward_weights(obs)
+            nobs, rew, done, _, info = env.step(action, reward_weights=rw)
+            controller.record_reward(rew)
             lr    = controller.compute_local_rewards(info)
             omega = _softmax(np.zeros(4))
             controller.store_transitions(
                 obs, action, lr, rew, nobs, done, np.zeros(4), omega
             )
         elif isinstance(controller, FlatMADRL):
+            nobs, rew, done, _, info = env.step(action)
             controller.store_transitions(
                 obs, action, np.full(4, rew / 4), nobs, done
             )
         else:
+            nobs, rew, done, _, info = env.step(action)
             controller.store_transitions(obs, action, rew, nobs, done)
 
         obs = nobs if not done else env.reset()[0]
 
 
 # ---------------------------------------------------------------------------
-# Single episode  — identical to original
+# Single episode  (ARW-1, ARW-2, ARW-3)
 # ---------------------------------------------------------------------------
 def train_episode(env, controller, batch_size: int = 256,
                   explore: bool = True) -> dict:
@@ -87,11 +90,16 @@ def train_episode(env, controller, batch_size: int = 256,
 
     for _ in range(env.T):
         if isinstance(controller, HMADRLFramework):
+            # ARW-1: adaptive weights for this timestep
+            rw = controller.get_reward_weights(obs)
             action, omega = controller.select_actions(obs, local_rewards, explore=explore)
+            next_obs, reward, done, _, info = env.step(action, reward_weights=rw)
+            # ARW-2: feed reward into REINFORCE buffer
+            controller.record_reward(reward)
         else:
             action = controller.select_actions(obs, explore=explore)
-
-        next_obs, reward, done, _, info = env.step(action)
+            # SA / Flat: no adaptive weights — identical to v4
+            next_obs, reward, done, _, info = env.step(action)
 
         if isinstance(controller, HMADRLFramework):
             prev_local    = local_rewards.copy()
@@ -113,13 +121,23 @@ def train_episode(env, controller, batch_size: int = 256,
         load_losses.append(info.get("load_loss", 0.0))
         obs = next_obs
 
+    # ARW-3: episode-end REINFORCE update for ARW (no-op for SA/Flat)
+    arw_info = {}
+    if isinstance(controller, HMADRLFramework):
+        arw_info = controller.update_arw()
+
     lolp = sum(1 for ll in load_losses if ll > 1.0) / len(load_losses)
-    return {"reward": total_reward, "cost": total_cost,
-            "soc_traj": soc_traj, "lolp": lolp}
+    return {
+        "reward":   total_reward,
+        "cost":     total_cost,
+        "soc_traj": soc_traj,
+        "lolp":     lolp,
+        "arw_loss": arw_info.get("arw_loss", 0.0),
+    }
 
 
 # ---------------------------------------------------------------------------
-# RCIR  — identical to original
+# RCIR
 # ---------------------------------------------------------------------------
 def compute_rcir(costs: list) -> float:
     c  = np.array(costs, dtype=float)
@@ -130,7 +148,7 @@ def compute_rcir(costs: list) -> float:
 
 
 # ---------------------------------------------------------------------------
-# FIX-1/FIX-3: weight I/O helpers
+# Weight I/O helpers  (ARW-4)
 # ---------------------------------------------------------------------------
 def save_weights(controller, save_dir: Path, method: str):
     """Save weights for SA and Flat (HMA uses save_if_best instead)."""
@@ -159,6 +177,9 @@ def load_weights(controller, save_dir: Path, method: str):
             agent.critic.load_state_dict(w[f"{name}_critic"])
         controller.supervisor.actor.load_state_dict(w["supervisor_actor"])
         controller.supervisor.critic.load_state_dict(w["supervisor_critic"])
+        # ARW-4: load ARW weights if present (backwards compatible)
+        if "arw" in w:
+            controller.arw.load_state_dict(w["arw"])
     elif isinstance(controller, FlatMADRL):
         for name, agent in controller.agents.items():
             agent.actor.load_state_dict(w[f"{name}_actor"])
@@ -197,22 +218,17 @@ def run_training(
         controller = SingleAgentDRL(device=device)
         label      = "Single-Agent DRL"
 
-    # --- Stress-test / eval-only mode ---
     if eval_only:
         print(f"[{label}] EVAL-ONLY mode — loading trained weights …")
         load_weights(controller, save_dir, method)
         n_episodes = 0
 
-    # --- Warm-up ---
     if not eval_only:
         print(f"[{label}] Warming up replay buffer ({WARMUP_STEPS} steps) …")
         warmup_buffer(env, controller, WARMUP_STEPS)
 
-    # --- Training loop ---
-    rewards, costs, lolps, soc_final = [], [], [], []
+    rewards, costs, lolps, soc_final, arw_losses = [], [], [], [], []
     t0 = time.time()
-
-    # FIX-2: divergence detection state
     divergence_strikes = 0
 
     for ep in range(1, n_episodes + 1):
@@ -222,36 +238,35 @@ def run_training(
         costs.append(result["cost"])
         lolps.append(result["lolp"])
         soc_final.append(result["soc_traj"])
+        arw_losses.append(result["arw_loss"])   # ARW-5
 
         if verbose and ep % max(1, n_episodes // 10) == 0:
-            elapsed = time.time() - t0
-            avg_r   = np.mean(rewards[-REPORT_WINDOW:])
+            elapsed  = time.time() - t0
+            avg_r    = np.mean(rewards[-REPORT_WINDOW:])
+            avg_arw  = np.mean(arw_losses[-REPORT_WINDOW:])
+            arw_str  = f" | ARW_loss={avg_arw:.4f}" if method == "hma" else ""
             print(
                 f"  Ep {ep:5d}/{n_episodes} | "
                 f"Avg reward({REPORT_WINDOW}) = {avg_r:7.2f} | "
                 f"Cost = {result['cost']:.3f} | "
                 f"LOLP = {result['lolp']:.3f} | "
                 f"Elapsed = {elapsed:.1f}s"
+                f"{arw_str}"
             )
 
-            # FIX-2: warn if HMA is diverging
             if method == "hma" and avg_r < DIVERGENCE_THRESHOLD:
                 divergence_strikes += 1
                 if divergence_strikes >= 2:
                     print(
                         f"\n  ⚠️  WARNING: HMA avg reward has been below "
                         f"{DIVERGENCE_THRESHOLD:.1f} for 2 consecutive windows.\n"
-                        f"  This seed may be diverging.  Consider killing this run "
-                        f"and restarting with a new seed.\n"
+                        f"  This seed may be diverging.  Consider restarting.\n"
                     )
             else:
-                divergence_strikes = 0   # reset on improvement
+                divergence_strikes = 0
 
-    # --- Save weights ---
-    # FIX-1: HMA uses save_if_best; SA/Flat save unconditionally
     if not eval_only:
         if method == "hma":
-            # Quick greedy probe to judge this seed's quality before saving
             probe_env = MicrogridEnv(episode_seed=999, domain_randomize=False)
             probe     = train_episode(probe_env, controller, batch_size=1, explore=False)
             saved     = controller.save_if_best(probe["reward"], save_dir, method)
@@ -260,7 +275,6 @@ def run_training(
         else:
             save_weights(controller, save_dir, method)
 
-    # --- Greedy evaluation (10 runs, Section 3.4.2) ---
     print(f"\n[{label}] Evaluating (10 greedy runs) …")
     eval_costs, eval_rewards, eval_lolps = [], [], []
     for run in range(10):
@@ -270,7 +284,7 @@ def run_training(
         eval_rewards.append(result["reward"])
         eval_lolps.append(result["lolp"])
 
-    rcir = compute_rcir(eval_costs)
+    rcir_val = compute_rcir(eval_costs)
 
     summary = {
         "method":            method,
@@ -279,14 +293,16 @@ def run_training(
         "rewards":           rewards,
         "costs":             costs,
         "lolps":             lolps,
+        "arw_losses":        arw_losses,
         "soc_traj_last":     soc_final[-1] if soc_final else [],
         "eval_costs":        eval_costs,
         "eval_rewards":      eval_rewards,
         "eval_lolps":        eval_lolps,
-        "rcir":              rcir,
-        "avg_cost_last50":   float(np.mean(costs[-50:])) if costs else 0.0,
+        "rcir":              rcir_val,
+        "avg_cost_last50":   float(np.mean(costs[-50:]))   if costs   else 0.0,
         "avg_reward_last50": float(np.mean(rewards[-50:])) if rewards else 0.0,
         "avg_lolp":          float(np.mean(eval_lolps)),
+        "avg_arw_loss":      float(np.mean(arw_losses[-50:])) if arw_losses else 0.0,
     }
 
     ckpt_path = save_dir / f"{method}_{scenario}_results.npz"
@@ -300,7 +316,7 @@ def run_training(
 
 
 # ---------------------------------------------------------------------------
-# Plotting  — identical to original
+# Plotting
 # ---------------------------------------------------------------------------
 def plot_all_results(results: list, out_dir: Path):
     out_dir.mkdir(exist_ok=True)
@@ -356,6 +372,19 @@ def plot_all_results(results: list, out_dir: Path):
     ax.grid(axis="y", alpha=0.3); plt.tight_layout()
     fig.savefig(out_dir / "fig12_statistical_variability.png", dpi=150); plt.close(fig)
 
+    # ARW-5: ARW loss curve (HMA only)
+    hma_results = [r for r in results if r["method"] == "hma"]
+    if hma_results and hma_results[0].get("arw_losses"):
+        arw_l = hma_results[0]["arw_losses"]
+        if len(arw_l) >= 20:
+            fig, ax = plt.subplots(figsize=(9, 4))
+            smooth = np.convolve(arw_l, np.ones(20) / 20, mode="valid")
+            ax.plot(smooth, color="#E84855", lw=2)
+            ax.set_xlabel("Episode"); ax.set_ylabel("ARW REINFORCE Loss")
+            ax.set_title("Adaptive Reward Weighter Training Loss (HMA)")
+            ax.grid(alpha=0.3); plt.tight_layout()
+            fig.savefig(out_dir / "fig_arw_loss.png", dpi=150); plt.close(fig)
+
     print(f"\nPlots saved to: {out_dir}")
 
 
@@ -363,19 +392,23 @@ def plot_all_results(results: list, out_dir: Path):
 # Comparison table
 # ---------------------------------------------------------------------------
 def print_comparison_table(results: list):
-    print("\n" + "=" * 72)
-    print(f"{'Method':<28} {'Avg Cost':>10} {'RCIR':>8} {'LOLP(%)':>9} {'Episodes':>10}")
-    print("=" * 72)
+    print("\n" + "=" * 80)
+    print(f"{'Method':<28} {'Avg Cost':>10} {'RCIR':>8} {'LOLP(%)':>9} "
+          f"{'Episodes':>10} {'ARW Loss':>10}")
+    print("=" * 80)
     for r in results:
-        ep_conv = _convergence_episode(r["rewards"])
+        ep_conv  = _convergence_episode(r["rewards"])
+        arw_loss = r.get("avg_arw_loss", 0.0)
+        arw_str  = f"{arw_loss:>10.4f}" if r["method"] == "hma" else f"{'N/A':>10}"
         print(
             f"{r['label']:<28} "
             f"{r['avg_cost_last50']:>10.4f} "
             f"{r['rcir']:>8.3f} "
             f"{100*r['avg_lolp']:>9.3f} "
-            f"{ep_conv:>10d}"
+            f"{ep_conv:>10d} "
+            f"{arw_str}"
         )
-    print("=" * 72)
+    print("=" * 80)
 
 
 def _convergence_episode(rewards: list, pct: float = 0.95) -> int:
