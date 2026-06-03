@@ -158,7 +158,7 @@ class AdaptiveRewardWeighter:
         weight_means = self.net(obs_t).squeeze(0)
         # Exploration noise (5% of magnitude, safe std)
         std = weight_means.detach() * 0.05 + 1e-6
-        noise = torch.randn_like(weight_means) * std
+        noise = torch.randn_like(weight_means, device=self.device) * std
         # Sample weights and clamp to avoid zero
         weights_sampled = (weight_means + noise).clamp(min=0.01)
 
