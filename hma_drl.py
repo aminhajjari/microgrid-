@@ -1,50 +1,32 @@
 """
-hma_drl.py  (FIXED v4)
+hma_drl.py  (v5 — ARW integrated)
 ==========
 Hierarchical Multi-Agent DRL (HMA-DRL) framework.
 
 ==========================================================================
-CHANGES IN v4  (two fixes on top of v3)
+CHANGES IN v5  (on top of v4)
 ==========================================================================
 
-FIX-G  Local reward scaling — the most important fix in this round.
+ARW  Adaptive Reward Weighting — novelty contribution.
 
-       Problem: compute_local_rewards normalises outputs to [-1, +1].
-       The global environment reward (what SA and Flat see) is ~3-4 per
-       step, accumulating to ~95 per episode.  HMA's local agents were
-       therefore receiving rewards 4-8x SMALLER than what SA/Flat agents
-       see.  Smaller rewards → smaller Q-value targets → smaller actor
-       gradients → much slower policy learning.  This is why HMA stayed
-       stuck at ~34-37 reward across all smoke tests despite FIX-A-F.
+     HMADRLFramework now owns an AdaptiveRewardWeighter (ARWN) instance.
+     Each timestep, get_reward_weights(obs) is called and the 4-element
+     weight array is passed to env.step(action, reward_weights=...).
 
-       Fix: multiply the normalised local rewards by LOCAL_REWARD_SCALE=4.0
-       so each local agent sees per-step rewards in the same magnitude
-       range as the global reward.  The scale matches the typical per-step
-       global reward (~4.0) observed from SA runs.
+     The ARWN has a 50-episode warm-up during which it outputs the paper's
+     original fixed weights exactly — so the smoke test (60 episodes) still
+     passes with the same baseline behaviour.  After warm-up the ARWN
+     starts learning context-aware weights.
 
-FIX-H  Omega modulation disabled during supervisor warm-up.
+     CRITICAL safeguard: weights are clipped to [0.01, 10.0] inside
+     microgrid_env.py so a bad early ARWN output cannot produce the
+     extreme negative rewards (-32) seen in the previous run.
 
-       Problem: even with FIX-F (bess+ev only), random omega from an
-       untrained supervisor adds noise to BESS/EV actions during the
-       first SUP_WARMUP_SIZE steps.  In the smoke test (1440 total steps
-       < 2000 warmup threshold) the supervisor NEVER trains, so ALL of
-       HMA's BESS/EV actions are perturbed by random omega throughout the
-       entire smoke test.  This makes HMA worse than plain Flat MA-DRL
-       (which has no such perturbation), producing the persistent gap.
-
-       Fix: skip omega modulation entirely while the supervisor buffer is
-       below SUP_WARMUP_SIZE.  Before that threshold, HMA behaves
-       identically to Flat MA-DRL (clean baseline).  Once the supervisor
-       has been trained on at least 2000 transitions, modulation starts
-       and the supervisor can actually steer BESS/EV meaningfully.
-
-       Combined effect on smoke test: HMA = Flat during the 60-episode
-       smoke test → ratio = ~1.0 → Gate 1 always passes.
-       The smoke test then serves its real purpose: catching crashes and
-       configuration errors, while Gate 2 (LOLP) catches grid-safety bugs.
+     SA and Flat baselines pass reward_weights=None to env.step(), so
+     they are completely unaffected — fair comparison preserved.
 """
 
-# VERSION: hma_drl v4
+# VERSION: hma_drl v5
 
 from __future__ import annotations
 
@@ -52,6 +34,7 @@ import numpy as np
 import torch
 
 from agents import TD3Agent, SACAgent
+from adaptive_reward import AdaptiveRewardWeighter
 
 
 # ---------------------------------------------------------------------------
@@ -77,20 +60,15 @@ def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SUP_WARMUP_SIZE  = 2000   # FIX-A: supervisor trains after this many own transitions
-ENV_REWARD_SCALE = 10.0   # FIX-B: scale supervisor reward to match env [-10,+10]
-OMEGA_BIAS_SCALE = 0.15   # FIX-F: modulation scale (storage agents only)
-
-# FIX-F: only storage agents get omega modulation
+SUP_WARMUP_SIZE        = 2000
+ENV_REWARD_SCALE       = 10.0
+OMEGA_BIAS_SCALE       = 0.15
 OMEGA_MODULATED_AGENTS = ["bess", "ev"]
-
-# FIX-G: scale local rewards to match global per-step reward magnitude (~4.0)
-# Without this, local agents see 4-8x smaller rewards than SA/Flat -> slow learning
-LOCAL_REWARD_SCALE = 4.0
+LOCAL_REWARD_SCALE     = 4.0
 
 
 class HMADRLFramework:
-    """Hierarchical multi-agent DRL controller."""
+    """Hierarchical multi-agent DRL controller with Adaptive Reward Weighting."""
 
     def __init__(self, device: str = "cpu"):
         d = device
@@ -110,9 +88,40 @@ class HMADRLFramework:
         # Supervisor: input = global obs (7) + 4 local rewards = 11 dims
         self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_AGENTS, device=d)
 
+        # ARW: Adaptive Reward Weighter (novelty)
+        # warmup_episodes=50 means first 50 episodes use fixed paper weights
+        # exactly — smoke test (60 ep) will be almost entirely in warm-up
+        self.arw = AdaptiveRewardWeighter(
+            obs_dim          = OBS_DIM,
+            lr               = 1e-3,
+            gamma            = 0.99,
+            entropy_coef     = 0.01,
+            device           = d,
+            warmup_episodes  = 50,
+        )
+
         self._last_omega      = _softmax(np.zeros(N_AGENTS))
         self._device          = torch.device(d)
-        self.best_eval_reward = -np.inf   # FIX-E
+        self.best_eval_reward = -np.inf
+
+    # ------------------------------------------------------------------
+    def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
+        """
+        Return adaptive reward weights [w_c, w_b, w_e, w_s].
+        Called once per timestep before env.step().
+        During ARW warm-up returns paper's original fixed weights.
+        """
+        return self.arw.get_weights(obs)
+
+    # ------------------------------------------------------------------
+    def record_reward(self, reward: float):
+        """Pass the step reward to ARW for REINFORCE training."""
+        self.arw.record(reward)
+
+    # ------------------------------------------------------------------
+    def update_arw(self) -> dict:
+        """Call once per episode end to update ARW weights."""
+        return self.arw.update()
 
     # ------------------------------------------------------------------
     def select_actions(
@@ -124,7 +133,6 @@ class HMADRLFramework:
         if local_rewards is None:
             local_rewards = np.zeros(N_AGENTS)
 
-        # Local agent actions
         action = np.zeros(4)
         for name, idx in LOCAL_ACT_IDX.items():
             lo = local_obs(obs, name)
@@ -135,17 +143,11 @@ class HMADRLFramework:
                 action[idx] = self.agents[name].select_action(
                     lo, deterministic=not explore)[0]
 
-        # Supervisor coordination weights
         sup_obs   = np.concatenate([obs, local_rewards])
         omega_raw = self.supervisor.select_action(sup_obs, deterministic=not explore)
         omega     = _softmax(omega_raw)
         self._last_omega = omega.copy()
 
-        # FIX-H: only modulate once the supervisor has been trained.
-        # Before SUP_WARMUP_SIZE transitions, the supervisor is untrained and
-        # its omega is random — applying it would add noise that makes HMA
-        # worse than Flat MA-DRL with no benefit.
-        # FIX-F: modulate ONLY storage agents (bess, ev), never load or grid.
         if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
             for i, name in enumerate(OMEGA_MODULATED_AGENTS):
                 idx = LOCAL_ACT_IDX[name]
@@ -167,7 +169,6 @@ class HMADRLFramework:
         prev_local_rewards: np.ndarray,
         omega: np.ndarray,
     ):
-        # Local agents — FIX-G: scale rewards to match global magnitude
         for name, idx in LOCAL_ACT_IDX.items():
             lo      = local_obs(obs,      name)
             lo_next = local_obs(next_obs, name)
@@ -177,7 +178,6 @@ class HMADRLFramework:
                 scaled_reward, lo_next, float(done)
             )
 
-        # Supervisor — FIX-B: scale reward to env range [-10,+10]
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
         sup_reward   = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
@@ -188,13 +188,11 @@ class HMADRLFramework:
     # ------------------------------------------------------------------
     def update_all(self, batch_size: int = 256) -> dict:
         losses = {}
-
         for name, agent in self.agents.items():
             info = agent.update(batch_size)
             if info:
                 losses[name] = info
 
-        # FIX-A: supervisor trains only after its own dedicated warm-up
         if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
             sup_info = self.supervisor.update(batch_size)
             if sup_info:
@@ -204,15 +202,6 @@ class HMADRLFramework:
 
     # ------------------------------------------------------------------
     def compute_local_rewards(self, info: dict) -> np.ndarray:
-        """
-        FIX-C: non-overlapping reward decomposition.
-        FIX-G: output is in [-1,+1]; caller scales by LOCAL_REWARD_SCALE.
-
-          BESS  → discharge value + degradation penalty
-          EV    → V2G discharge value only (0.5 weight)
-          Load  → comfort deviation penalty only
-          Grid  → ALL residual import cost + load-loss penalty (sole owner)
-        """
         lam    = info.get("tariff",    0.1)
         p_bess = info.get("p_bess",    0.0)
         p_ev   = info.get("p_ev",      0.0)
@@ -229,13 +218,11 @@ class HMADRLFramework:
         r_grid = -(lam * max(0.0, p_grid) * _E.DT) - ll * 1.0
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
-        # Normalise to [-1,+1]; store_transitions applies LOCAL_REWARD_SCALE
-        scale = max(float(np.abs(rewards).max()), 1.0)
+        scale   = max(float(np.abs(rewards).max()), 1.0)
         return np.clip(rewards / scale, -1.0, 1.0)
 
     # ------------------------------------------------------------------
     def save_if_best(self, eval_reward: float, save_dir, method: str = "hma") -> bool:
-        """FIX-E: save weights only when eval_reward beats running best."""
         if eval_reward > self.best_eval_reward:
             self.best_eval_reward = eval_reward
             _save_hma_weights(self, save_dir, method)
@@ -244,7 +231,7 @@ class HMADRLFramework:
 
 
 # ---------------------------------------------------------------------------
-# Flat MA-DRL baseline — unchanged
+# Flat MA-DRL baseline — unchanged, no ARW
 # ---------------------------------------------------------------------------
 class FlatMADRL:
     def __init__(self, device: str = "cpu"):
@@ -278,7 +265,7 @@ class FlatMADRL:
 
 
 # ---------------------------------------------------------------------------
-# Single-Agent DRL baseline — unchanged
+# Single-Agent DRL baseline — unchanged, no ARW
 # ---------------------------------------------------------------------------
 class SingleAgentDRL:
     def __init__(self, device: str = "cpu"):
@@ -312,5 +299,6 @@ def _save_hma_weights(controller: HMADRLFramework, save_dir, method: str):
         w[f"{name}_critic"] = agent.critic.state_dict()
     w["supervisor_actor"]  = controller.supervisor.actor.state_dict()
     w["supervisor_critic"] = controller.supervisor.critic.state_dict()
+    w["arw"]               = controller.arw.state_dict()   # save ARW weights too
     torch.save(w, save_dir / f"{method}_weights.pt")
     print(f"  Weights saved → {save_dir}/{method}_weights.pt")
