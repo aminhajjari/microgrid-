@@ -154,28 +154,28 @@ class AdaptiveRewardWeighter:
             return BASE_WEIGHTS.copy()
 
         obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-
-        with torch.no_grad() if not self.net.training else torch.enable_grad():
-            pass
-
-        # Always need grad for training path
-        obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-        weight_means = self.net(obs_t).squeeze(0)   # shape (4,)
-
-        # Add small Gaussian noise for exploration (std = 5% of mean)
-        noise = torch.randn_like(weight_means) * (weight_means.detach() * 0.05)
+        # Forward pass → mean weights (already scaled to WEIGHT_SCALE)
+        weight_means = self.net(obs_t).squeeze(0)
+        # Exploration noise (5% of magnitude, safe std)
+        std = weight_means.detach() * 0.05 + 1e-6
+        noise = torch.randn_like(weight_means) * std
+        # Sample weights and clamp to avoid zero
         weights_sampled = (weight_means + noise).clamp(min=0.01)
 
-        # Log-prob under Gaussian approximation for REINFORCE
-        std = weight_means.detach() * 0.05 + 1e-6
+        # 🔥 IMPORTANT: renormalize so sum stays constant
+        weights_sampled = weights_sampled / weights_sampled.sum() * WEIGHT_SCALE
+
+        # Build distribution for REINFORCE
         dist = torch.distributions.Normal(weight_means, std)
+
         log_prob = dist.log_prob(weights_sampled.detach()).sum()
         entropy  = dist.entropy().sum()
 
+        # Store for update()
         self._log_probs.append(log_prob)
         self._entropies.append(entropy)
 
-        return weights_sampled.detach().cpu().numpy()
+        return weights_sampled.detach().cpu().numpy()        
 
     # ------------------------------------------------------------------
     def record(self, reward: float):
