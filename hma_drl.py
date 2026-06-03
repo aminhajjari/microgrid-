@@ -212,9 +212,9 @@ class HMADRLFramework:
         
 
         r_bess = (lam * p_bess * DT) - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-        r_ev   = (lam * max(0.0, p_ev) * _E.DT) * 0.5
+        r_ev   = (lam * max(0.0, p_ev) * DT) * 0.5
         r_load = -abs(p_flex - 30.0) * ZETA
-        r_grid = -(lam * max(0.0, p_grid) * _E.DT) - ll * 1.0
+        r_grid = -(lam * max(0.0, p_grid) * DT) - ll * 1.0
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
         scale   = max(float(np.abs(rewards).max()), 1.0)
