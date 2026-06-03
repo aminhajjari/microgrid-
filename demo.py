@@ -1,24 +1,14 @@
 """
-demo.py  (FIXED v4)
+demo.py  (v5 — ARW integrated)
 =======
 Smoke test — 60 episodes per method.
 
-CHANGE in v4:
-  Gate 1 is now HMA vs SA with threshold 0.35, not HMA vs Flat.
-  
-  Why: Flat reward varies wildly at 60 episodes (44-111 across runs) because
-  four independent agents with small buffers have high variance.  Comparing
-  HMA to an unstable reference produces unreliable gate results.
-  SA is stable across all runs (94-95 ± 0.5) and is the right reference.
-  
-  Threshold 0.35:
-    - Original broken run (real bugs): HMA=36, SA=95 -> 0.38 (borderline)
-    - We keep 0.35 to catch real disasters while accepting early-training lag
-    - The REAL gate is Gate 2 (LOLP), which is stable and meaningful
-
-  With FIX-H (omega disabled until supervisor warms up), HMA = Flat exactly
-  during the 60-episode smoke test, so HMA should reach ~SA-level reward.
-  If Gate 1 fails at 0.35, it's a genuine problem.
+CHANGE in v5:
+  HMA now uses ARW (Adaptive Reward Weighting).
+  get_reward_weights(obs) is called each step and passed to env.step().
+  ARW warm-up = 50 episodes, so smoke test (60 ep) is almost entirely
+  in warm-up → behaviour identical to v4 → Gate 1 still passes.
+  update_arw() is called at episode end to train ARWN after warm-up.
 """
 
 import sys
@@ -39,12 +29,7 @@ DEVICE     = "cpu"
 OUT_DIR    = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
 
-# Gate 1: HMA vs SA — SA is stable reference (94-95 across all runs)
-# Threshold 0.35: low enough not to false-fail, high enough to catch disasters
-# With FIX-H, HMA = Flat at 60 eps, so expect ratio ~0.45-0.55 (Flat/SA level)
-SMOKE_HMA_VS_SA_MIN = 0.35
-
-# Gate 2: LOLP ratio — unchanged from v3, catches grid safety bugs
+SMOKE_HMA_VS_SA_MIN      = 0.35
 SMOKE_HMA_VS_FLAT_LOLP_MAX = 2.0
 
 
@@ -75,12 +60,18 @@ def run_one(method: str, n_ep: int = N_EPISODES):
 
         for _ in range(env.T):
             if isinstance(ctrl, HMADRLFramework):
+                # ARW: get adaptive weights for this timestep
+                rw = ctrl.get_reward_weights(obs)
                 action, omega = ctrl.select_actions(obs, local_rewards,
                                                     explore=(ep < n_ep * 0.8))
+                # Pass adaptive weights to env
+                nobs, reward, done, _, info = env.step(action, reward_weights=rw)
+                # Record reward for ARW REINFORCE update
+                ctrl.record_reward(reward)
             else:
                 action = ctrl.select_actions(obs, explore=(ep < n_ep * 0.8))
-
-            nobs, reward, done, _, info = env.step(action)
+                # SA and Flat: no reward_weights → uses fixed paper weights
+                nobs, reward, done, _, info = env.step(action)
 
             if isinstance(ctrl, HMADRLFramework):
                 prev          = local_rewards.copy()
@@ -101,6 +92,10 @@ def run_one(method: str, n_ep: int = N_EPISODES):
             p_load_ep.append(info["p_load"])
             p_sup_ep.append(info["p_load"] - info["load_loss"])
             obs = nobs
+
+        # ARW episode-end update
+        if isinstance(ctrl, HMADRLFramework):
+            ctrl.update_arw()
 
         rewards.append(ep_reward)
         costs.append(ep_cost)
@@ -174,18 +169,12 @@ def print_table(results):
           f"{'RCIR':>8} {'LOLP%':>8}")
     print("=" * 72)
     for r in results:
-        print(
-            f"{r['label']:<28} "
-            f"{r['avg_reward']:>12.2f} "
-            f"{r['avg_cost']:>10.4f} "
-            f"{r['rcir']:>8.3f} "
-            f"{100*r['avg_lolp']:>8.3f}"
-        )
+        print(f"{r['label']:<28} {r['avg_reward']:>12.2f} "
+              f"{r['avg_cost']:>10.4f} {r['rcir']:>8.3f} "
+              f"{100*r['avg_lolp']:>8.3f}")
     print("=" * 72)
 
 
-# ---------------------------------------------------------------------------
-# Two-gate quality check
 # ---------------------------------------------------------------------------
 def check_smoke_quality(results) -> bool:
     by_method  = {r["method"]: r for r in results}
@@ -201,7 +190,6 @@ def check_smoke_quality(results) -> bool:
 
     passed = True
 
-    # --- Gate 1: HMA vs SA reward ratio (SA is stable reference) ---
     if sa_reward <= 0:
         print("  ⚠️  SA reward is non-positive — environment bug.")
         return False
@@ -214,22 +202,14 @@ def check_smoke_quality(results) -> bool:
             f"     SA  avg_reward = {sa_reward:.1f}\n"
             f"     HMA/SA ratio   = {reward_ratio:.2f} < required "
             f"{SMOKE_HMA_VS_SA_MIN:.2f}\n"
-            f"\n"
-            f"     With FIX-H, HMA should be comparable to Flat at 60 episodes\n"
-            f"     (supervisor warm-up disables omega modulation entirely).\n"
-            f"     A ratio below {SMOKE_HMA_VS_SA_MIN:.2f} means a core bug is present.\n"
-            f"\n"
-            f"     Verify correct file is deployed:\n"
-            f"       grep VERSION "
-            f"/home/gkianfar/scratch/Amin/MSH/microgrid-/hma_drl.py\n"
-            f"     Should print:  # VERSION: hma_drl v4\n"
+            f"     Check: adaptive_reward.py must be in the same directory.\n"
+            f"     Check: # VERSION: hma_drl v5\n"
         )
         passed = False
     else:
         print(f"  ✓ Gate 1 passed  (HMA/SA = {reward_ratio:.2f} ≥ "
               f"{SMOKE_HMA_VS_SA_MIN:.2f})")
 
-    # --- Gate 2: LOLP ratio vs Flat (grid safety) ---
     ref_lolp = flat_lolp if flat_lolp is not None else sa_lolp
     ref_name = "Flat" if flat_lolp is not None else "SA"
     if ref_lolp is not None and hma_lolp is not None and ref_lolp > 0:
@@ -241,12 +221,6 @@ def check_smoke_quality(results) -> bool:
                 f"     {ref_name} LOLP = {100*ref_lolp:.1f}%\n"
                 f"     Ratio = {lolp_ratio:.1f}x > allowed "
                 f"{SMOKE_HMA_VS_FLAT_LOLP_MAX:.1f}x\n"
-                f"\n"
-                f"     Omega is restricting grid import.  Check that:\n"
-                f"       OMEGA_MODULATED_AGENTS = ['bess', 'ev']   (FIX-F)\n"
-                f"       Modulation only runs when supervisor buffer >= 2000  (FIX-H)\n"
-                f"     grep VERSION + grep OMEGA_MODULATED "
-                f"/home/gkianfar/scratch/Amin/MSH/microgrid-/hma_drl.py\n"
             )
             passed = False
         else:
