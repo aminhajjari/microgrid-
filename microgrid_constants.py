@@ -1,0 +1,5 @@
+DT = 1.0
+GAMMA = 0.05
+P_BESS_MAX = 50.0
+KAPPA = 1.4
+ZETA = 0.1
