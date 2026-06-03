@@ -209,7 +209,7 @@ class HMADRLFramework:
         p_grid = info.get("p_grid",    0.0)
         ll     = info.get("load_loss", 0.0)
 
-        from microgrid_env import MicrogridEnv as _E
+        
 
         r_bess = (lam * p_bess * _E.DT) \
                  - _E.GAMMA * (abs(p_bess) / _E.P_BESS_MAX) ** _E.KAPPA
