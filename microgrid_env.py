@@ -74,10 +74,10 @@ class MicrogridEnv(gym.Env):
             self._soc - p_bess * DT / (P_BESS_MAX * 2), 0.1, 0.9
         )
 
-        r_cost    = -tariff * max(0, p_grid) * DT * 0.1
-        r_battery = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-        r_energy  = p_pv * DT * 0.05
-        r_safe    = -load_loss * 0.1
+        r_cost    = -tariff * max(0, p_grid) * DT * 0.02
+        r_battery = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA * 0.1
+        r_energy  = p_pv * DT * 0.1
+        r_safe    = -load_loss * 0.05
         reward    = w_c*r_cost + w_b*r_battery + w_e*r_energy + w_s*r_safe
 
         self._t += 1
