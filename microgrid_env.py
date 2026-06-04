@@ -49,53 +49,46 @@ class MicrogridEnv(gym.Env):
         ], dtype=np.float32)
 
     def step(self, action, reward_weights=None):
-        # Default paper weights
         if reward_weights is None:
             w_c, w_b, w_e, w_s = 1.0, 0.3, 0.2, 0.5
         else:
-            rw = np.clip(reward_weights, 0.01, 10.0)   # CRITICAL safeguard
+            rw = np.clip(reward_weights, 0.01, 10.0)
             w_c, w_b, w_e, w_s = rw[0], rw[1], rw[2], rw[3]
 
-        action   = np.clip(action, -1, 1)
-        p_bess   = float(action[0]) * P_BESS_MAX
-        p_ev     = float(action[1]) * 20.0
-        p_flex   = 30.0 + float(action[2]) * 10.0
-        p_grid_a = float(action[3]) * 50.0
+        action = np.clip(action, -1, 1)
+        p_bess = float(action[0]) * P_BESS_MAX
+        p_ev   = float(action[1]) * 20.0
+        p_flex = 30.0 + float(action[2]) * 10.0
 
-        obs      = self._get_obs()
-        tariff   = float(obs[4])
-        p_pv     = float(obs[2]) * 50.0
-        p_load   = float(obs[3]) * 80.0
+        # Use current timestep for physics — call _get_obs() ONCE here
+        obs    = self._get_obs()
+        tariff = float(obs[4])
+        p_pv   = float(obs[2]) * 50.0
+        p_load = float(obs[3]) * 80.0
 
         p_grid    = p_load - p_pv - p_bess - p_ev
         load_loss = max(0.0, -p_grid - 50.0)
         p_grid    = np.clip(p_grid, -50.0, 50.0)
 
-        # Update SOC
         self._soc = np.clip(
             self._soc - p_bess * DT / (P_BESS_MAX * 2), 0.1, 0.9
         )
 
-        # Reward components (Eq. 9)
         r_cost    = -tariff * max(0, p_grid) * DT
         r_battery = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
         r_energy  = p_pv * DT * 0.01
         r_safe    = -load_loss * 0.5
+        reward    = w_c*r_cost + w_b*r_battery + w_e*r_energy + w_s*r_safe
 
-        reward = w_c*r_cost + w_b*r_battery + w_e*r_energy + w_s*r_safe
-
-        self._t  += 1
-        done      = self._t >= self.T
+        self._t += 1
+        done = self._t >= self.T
 
         info = {
-            "tariff":    tariff,
-            "p_grid":    p_grid,
-            "p_bess":    p_bess,
-            "p_ev":      p_ev,
-            "p_flex":    p_flex,
-            "p_load":    p_load,
-            "p_pv":      p_pv,
-            "soc_bess":  self._soc,
-            "load_loss": load_loss,
+            "tariff": tariff, "p_grid": p_grid, "p_bess": p_bess,
+            "p_ev": p_ev, "p_flex": p_flex, "p_load": p_load,
+            "p_pv": p_pv, "soc_bess": self._soc, "load_loss": load_loss,
         }
-        return self._get_obs(), float(reward), done, False, info
+
+        # Increment happened above, so next call to _get_obs() gives next timestep
+        next_obs = self._get_obs()
+        return next_obs, float(reward), done, False, info
