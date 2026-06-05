@@ -226,10 +226,12 @@ class AdaptiveRewardWeighter:
 
         for i in range(n):
             advantage = ret_tensor[i] - self._baseline
+            advantage = torch.clamp(torch.tensor(float(advantage)), -5.0, 5.0)
             policy_loss  = policy_loss  - self._log_probs[i] * advantage
-            entropy_loss = entropy_loss - self._entropies[i]   # maximise entropy
+            entropy_loss = entropy_loss - self._entropies[i]
 
         total_loss = policy_loss / n + self.entropy_coef * entropy_loss / n
+        total_loss = torch.clamp(total_loss, -100.0, 100.0)
 
         self.opt.zero_grad()
         total_loss.backward()
