@@ -170,7 +170,7 @@ def load_weights(controller, save_dir: Path, method: str):
         raise FileNotFoundError(
             f"No weights at {path} — run normal scenario training first."
         )
-    w = torch.load(path, map_location="cpu")
+    w = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(controller, HMADRLFramework):
         for name, agent in controller.agents.items():
             agent.actor.load_state_dict(w[f"{name}_actor"])
