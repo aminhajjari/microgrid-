@@ -39,7 +39,7 @@ echo "========================================="
 # LOAD MODULES
 # ==============================
 module purge
-module load gcc python/3.10 cuda/12.6
+module load StdEnv/2023 python/3.10.13 cuda/12.2
 echo "✓ Modules loaded"
 
 # ==============================
@@ -59,8 +59,7 @@ cd $CODE_PATH || exit 1
 # VIRTUAL ENV
 # ==============================
 if [ ! -d "$VENV_PATH" ]; then
-    echo "Creating virtual environment …"
-    python -m venv $VENV_PATH
+    virtualenv --no-download $VENV_PATH
 fi
 source $VENV_PATH/bin/activate
 echo "✓ Environment: $VIRTUAL_ENV"
@@ -69,9 +68,10 @@ echo "✓ Environment: $VIRTUAL_ENV"
 # DEPENDENCIES
 # ==============================
 echo "=== Checking / Installing Dependencies ==="
-pip install --quiet --upgrade pip
-pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install --quiet numpy matplotlib gymnasium
+pip install --no-index --upgrade pip
+pip install --no-index torch torchvision
+pip install --no-index numpy matplotlib
+pip install gymnasium
 echo "✓ Dependencies ready"
 
 # ==============================
