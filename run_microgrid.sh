@@ -68,10 +68,12 @@ echo "✓ Environment: $VIRTUAL_ENV"
 # DEPENDENCIES
 # ==============================
 echo "=== Checking / Installing Dependencies ==="
-pip install --no-index --upgrade pip
-pip install --no-index torch torchvision
-pip install --no-index numpy matplotlib
-pip install gymnasium
+python -c "import torch, numpy, matplotlib, gymnasium" 2>/dev/null || {
+    pip install --no-index --upgrade pip
+    pip install --no-index torch torchvision
+    pip install --no-index numpy matplotlib
+    pip install gymnasium
+}
 echo "✓ Dependencies ready"
 
 # ==============================
