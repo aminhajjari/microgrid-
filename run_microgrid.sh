@@ -3,7 +3,7 @@
 #SBATCH --account=def-arashmoh
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --output=/home/gkianfar/scratch/Amin/MSH/output/logs/hma_%j.out
