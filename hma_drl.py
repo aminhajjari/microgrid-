@@ -1,32 +1,18 @@
 """
-hma_drl.py  (v5 — ARW integrated)
-==========
-Hierarchical Multi-Agent DRL (HMA-DRL) framework.
+hma_drl.py  — v2 (fixed)
 
-==========================================================================
-CHANGES IN v5  (on top of v4)
-==========================================================================
-
-ARW  Adaptive Reward Weighting — novelty contribution.
-
-     HMADRLFramework now owns an AdaptiveRewardWeighter (ARWN) instance.
-     Each timestep, get_reward_weights(obs) is called and the 4-element
-     weight array is passed to env.step(action, reward_weights=...).
-
-     The ARWN has a 50-episode warm-up during which it outputs the paper's
-     original fixed weights exactly — so the smoke test (60 episodes) still
-     passes with the same baseline behaviour.  After warm-up the ARWN
-     starts learning context-aware weights.
-
-     CRITICAL safeguard: weights are clipped to [0.01, 10.0] inside
-     microgrid_env.py so a bad early ARWN output cannot produce the
-     extreme negative rewards (-32) seen in the previous run.
-
-     SA and Flat baselines pass reward_weights=None to env.step(), so
-     they are completely unaffected — fair comparison preserved.
+FIXES vs v1:
+  FIX-1  compute_local_rewards() normalises each agent's reward
+         independently (was dividing by global max, which crushed
+         smaller agents like load to near zero).
+  FIX-2  Load agent reward now includes a cost-saving term so it has
+         genuine incentive to shift load away from peak tariff hours.
+  FIX-3  Supervisor warmup raised from 2,000 to 10,000 steps so it
+         only starts coordinating after local agents have learned
+         basic policies.
 """
 
-# VERSION: hma_drl v5
+# VERSION: hma_drl v2
 
 from __future__ import annotations
 
@@ -37,12 +23,9 @@ from agents import TD3Agent, SACAgent
 from adaptive_reward import AdaptiveRewardWeighter
 from microgrid_constants import DT, GAMMA, P_BESS_MAX, KAPPA, ZETA
 
-# ---------------------------------------------------------------------------
-# Observation / action split helpers
-# ---------------------------------------------------------------------------
 OBS_DIM  = 7
 ACT_DIM  = 4
-N_AGENTS = 4   # BESS, EV, Load, Grid
+N_AGENTS = 4
 
 LOCAL_OBS_IDX = {
     "bess": [0, 2, 3, 4, 5, 6],
@@ -57,10 +40,8 @@ def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
     return obs[LOCAL_OBS_IDX[agent]]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-SUP_WARMUP_SIZE        = 2000
+# FIX-3: raised from 2000 to 10000
+SUP_WARMUP_SIZE        = 10_000
 ENV_REWARD_SCALE       = 10.0
 OMEGA_BIAS_SCALE       = 0.15
 OMEGA_MODULATED_AGENTS = ["bess", "ev"]
@@ -68,7 +49,7 @@ LOCAL_REWARD_SCALE     = 4.0
 
 
 class HMADRLFramework:
-    """Hierarchical multi-agent DRL controller with Adaptive Reward Weighting."""
+    """Hierarchical MA-DRL with Adaptive Reward Weighting."""
 
     def __init__(self, device: str = "cpu"):
         d = device
@@ -85,19 +66,15 @@ class HMADRLFramework:
             "grid": SACAgent(lo_grid, 1, device=d),
         }
 
-        # Supervisor: input = global obs (7) + 4 local rewards = 11 dims
         self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_AGENTS, device=d)
 
-        # ARW: Adaptive Reward Weighter (novelty)
-        # warmup_episodes=50 means first 50 episodes use fixed paper weights
-        # exactly — smoke test (60 ep) will be almost entirely in warm-up
         self.arw = AdaptiveRewardWeighter(
-            obs_dim          = OBS_DIM,
-            lr               = 1e-3,
-            gamma            = 0.99,
-            entropy_coef     = 0.01,
-            device           = d,
-            warmup_episodes  = 50,
+            obs_dim         = OBS_DIM,
+            lr              = 1e-3,
+            gamma           = 0.99,
+            entropy_coef    = 0.01,
+            device          = d,
+            warmup_episodes = 50,
         )
 
         self._last_omega      = _softmax(np.zeros(N_AGENTS))
@@ -106,30 +83,16 @@ class HMADRLFramework:
 
     # ------------------------------------------------------------------
     def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Return adaptive reward weights [w_c, w_b, w_e, w_s].
-        Called once per timestep before env.step().
-        During ARW warm-up returns paper's original fixed weights.
-        """
         return self.arw.get_weights(obs)
 
-    # ------------------------------------------------------------------
     def record_reward(self, reward: float):
-        """Pass the step reward to ARW for REINFORCE training."""
         self.arw.record(reward)
 
-    # ------------------------------------------------------------------
     def update_arw(self) -> dict:
-        """Call once per episode end to update ARW weights."""
         return self.arw.update()
 
     # ------------------------------------------------------------------
-    def select_actions(
-        self,
-        obs: np.ndarray,
-        local_rewards: np.ndarray | None = None,
-        explore: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def select_actions(self, obs, local_rewards=None, explore=True):
         if local_rewards is None:
             local_rewards = np.zeros(N_AGENTS)
 
@@ -158,24 +121,14 @@ class HMADRLFramework:
         return action, omega
 
     # ------------------------------------------------------------------
-    def store_transitions(
-        self,
-        obs: np.ndarray,
-        action: np.ndarray,
-        local_rewards: np.ndarray,
-        global_reward: float,
-        next_obs: np.ndarray,
-        done: bool,
-        prev_local_rewards: np.ndarray,
-        omega: np.ndarray,
-    ):
+    def store_transitions(self, obs, action, local_rewards, global_reward,
+                          next_obs, done, prev_local_rewards, omega):
         for name, idx in LOCAL_ACT_IDX.items():
             lo      = local_obs(obs,      name)
             lo_next = local_obs(next_obs, name)
-            scaled_reward = float(local_rewards[idx]) * LOCAL_REWARD_SCALE
+            scaled  = float(local_rewards[idx]) * LOCAL_REWARD_SCALE
             self.agents[name].buffer.store(
-                lo, np.array([action[idx]]),
-                scaled_reward, lo_next, float(done)
+                lo, np.array([action[idx]]), scaled, lo_next, float(done)
             )
 
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
@@ -192,12 +145,10 @@ class HMADRLFramework:
             info = agent.update(batch_size)
             if info:
                 losses[name] = info
-
         if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
             sup_info = self.supervisor.update(batch_size)
             if sup_info:
                 losses["supervisor"] = sup_info
-
         return losses
 
     # ------------------------------------------------------------------
@@ -205,20 +156,28 @@ class HMADRLFramework:
         lam    = info.get("tariff",    0.1)
         p_bess = info.get("p_bess",    0.0)
         p_ev   = info.get("p_ev",      0.0)
-        p_flex = info.get("p_flex",    info.get("p_load", 30.0))
+        p_flex = info.get("p_flex",    30.0)
         p_grid = info.get("p_grid",    0.0)
         ll     = info.get("load_loss", 0.0)
 
-        
-
         r_bess = (lam * p_bess * DT) - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
         r_ev   = (lam * max(0.0, p_ev) * DT) * 0.5
-        r_load = -abs(p_flex - 30.0) * ZETA
+
+        # FIX-2: load agent gets cost-saving incentive, not just comfort penalty
+        comfort_penalty = -abs(p_flex - 30.0) * ZETA
+        cost_saving     = lam * (30.0 - p_flex) * DT * 0.5
+        r_load          = comfort_penalty + cost_saving
+
         r_grid = -(lam * max(0.0, p_grid) * DT) - ll * 1.0
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
-        scale   = max(float(np.abs(rewards).max()), 1.0)
-        return np.clip(rewards / scale, -1.0, 1.0)
+
+        # FIX-1: normalise each agent independently (was global max — crushed small agents)
+        for i in range(len(rewards)):
+            s = max(abs(float(rewards[i])), 0.1)
+            rewards[i] = float(np.clip(rewards[i] / s, -1.0, 1.0))
+
+        return rewards
 
     # ------------------------------------------------------------------
     def save_if_best(self, eval_reward: float, save_dir, method: str = "hma") -> bool:
@@ -230,7 +189,7 @@ class HMADRLFramework:
 
 
 # ---------------------------------------------------------------------------
-# Flat MA-DRL baseline — unchanged, no ARW
+# Flat MA-DRL baseline — unchanged
 # ---------------------------------------------------------------------------
 class FlatMADRL:
     def __init__(self, device: str = "cpu"):
@@ -264,7 +223,7 @@ class FlatMADRL:
 
 
 # ---------------------------------------------------------------------------
-# Single-Agent DRL baseline — unchanged, no ARW
+# Single-Agent DRL baseline — unchanged
 # ---------------------------------------------------------------------------
 class SingleAgentDRL:
     def __init__(self, device: str = "cpu"):
@@ -298,6 +257,6 @@ def _save_hma_weights(controller: HMADRLFramework, save_dir, method: str):
         w[f"{name}_critic"] = agent.critic.state_dict()
     w["supervisor_actor"]  = controller.supervisor.actor.state_dict()
     w["supervisor_critic"] = controller.supervisor.critic.state_dict()
-    w["arw"]               = controller.arw.state_dict()   # save ARW weights too
+    w["arw"]               = controller.arw.state_dict()
     torch.save(w, save_dir / f"{method}_weights.pt")
     print(f"  Weights saved → {save_dir}/{method}_weights.pt")
