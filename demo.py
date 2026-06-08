@@ -194,7 +194,7 @@ def check_smoke_quality(results) -> bool:
         print("  ⚠️  SA reward is extremely negative — environment bug.")
         return False
 
-    reward_ratio = hma_reward / sa_reward
+    reward_ratio = hma_reward / sa_reward if sa_reward > 0.1 else (1.0 if hma_reward >= 0 else 0.0)
     if reward_ratio < SMOKE_HMA_VS_SA_MIN:
         print(
             f"\n  ❌ GATE 1 FAILED — severe reward regression\n"
