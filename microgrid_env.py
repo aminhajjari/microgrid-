@@ -133,10 +133,10 @@ class MicrogridEnv(gym.Env):
         ))
 
         # --- reward components ---
-        r_cost    = -tariff * max(0.0, p_grid) * DT * 0.02
-        r_battery = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA * 0.1
-        r_energy  = (p_pv / 50.0) * DT * 0.5
-        r_safe    = -load_loss * 0.05
+        r_cost    = -tariff * max(0.0, p_grid) * DT * 0.1
+        r_battery = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA * 0.5
+        r_energy  = (p_pv / 50.0) * DT * 1.0
+        r_safe    = -load_loss * 1.0
         reward    = float(w_c*r_cost + w_b*r_battery + w_e*r_energy + w_s*r_safe)
 
         # --- advance time and pre-generate NEXT state ---
