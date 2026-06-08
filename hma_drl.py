@@ -45,7 +45,7 @@ SUP_WARMUP_SIZE        = 10_000
 ENV_REWARD_SCALE       = 10.0
 OMEGA_BIAS_SCALE       = 0.15
 OMEGA_MODULATED_AGENTS = ["bess", "ev"]
-LOCAL_REWARD_SCALE     = 4.0
+LOCAL_REWARD_SCALE     = 1.0
 
 
 class HMADRLFramework:
@@ -168,14 +168,13 @@ class HMADRLFramework:
         cost_saving     = lam * (30.0 - p_flex) * DT * 0.5
         r_load          = comfort_penalty + cost_saving
 
-        r_grid = -(lam * max(0.0, p_grid) * DT) - ll * 1.0
+        r_grid = -(lam * max(0.0, p_grid) * DT) - ll * 5.0
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
 
-        # FIX-1: normalise each agent independently (was global max — crushed small agents)
-        for i in range(len(rewards)):
-            s = max(abs(float(rewards[i])), 0.1)
-            rewards[i] = float(np.clip(rewards[i] / s, -1.0, 1.0))
+        #  normalise each agent independently (was global max — crushed small agents)
+        scale = max(np.max(np.abs(rewards)), 1.0)
+        rewards = np.clip(rewards / scale, -1.0, 1.0)
 
         return rewards
 
