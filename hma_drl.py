@@ -170,7 +170,7 @@ class HMADRLFramework:
         r_load = -abs(p_flex - 30.0) * ZETA * 0.1
 
         # Grid: HARD penalty for load loss, mild penalty for grid import
-        r_grid = -ll * 2.0 - lam * max(0.0, p_grid) * DT * 0.01
+        r_grid = -ll * 2.0 - lam * max(0.0, p_grid) * DT * 0.1
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
 
