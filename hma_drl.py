@@ -133,7 +133,8 @@ class HMADRLFramework:
 
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
-        sup_reward   = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
+        p_grid_val = float(abs(info.get("p_grid", 0.0))) if hasattr(self, '_last_info') else 0.0
+        sup_reward = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
         self.supervisor.buffer.store(
             sup_obs, omega, sup_reward, sup_next_obs, float(done)
         )
