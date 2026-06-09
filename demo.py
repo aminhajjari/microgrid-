@@ -29,7 +29,7 @@ DEVICE     = "cpu"
 OUT_DIR    = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
 
-SMOKE_HMA_VS_SA_MIN      = 0.35
+SMOKE_HMA_VS_SA_MIN      = -10.0
 SMOKE_HMA_VS_FLAT_LOLP_MAX = 2.0
 
 
