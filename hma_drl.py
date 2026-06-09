@@ -160,20 +160,22 @@ class HMADRLFramework:
         p_grid = info.get("p_grid",    0.0)
         ll     = info.get("load_loss", 0.0)
 
-        r_bess = (lam * p_bess * DT) - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-        r_ev   = (lam * max(0.0, p_ev) * DT) * 0.5
+        # BESS: reward efficient discharge, penalise degradation
+        r_bess = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
 
-        # FIX-2: load agent gets cost-saving incentive, not just comfort penalty
-        comfort_penalty = -abs(p_flex - 30.0) * ZETA
-        cost_saving     = lam * (30.0 - p_flex) * DT * 0.5
-        r_load          = comfort_penalty + cost_saving
+        # EV: small reward for managed charging
+        r_ev = -abs(p_ev) * 0.001
 
-        r_grid = -(lam * max(0.0, p_grid) * DT) - ll * 5.0
+        # Load: penalise deviation from baseline comfort
+        r_load = -abs(p_flex - 30.0) * ZETA * 0.1
+
+        # Grid: HARD penalty for load loss, mild penalty for grid import
+        r_grid = -ll * 2.0 - lam * max(0.0, p_grid) * DT * 0.01
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
 
-        #  normalise each agent independently (was global max — crushed small agents)
-        scale = max(np.max(np.abs(rewards)), 1.0)
+        # Normalise by global scale, floor at 0.5 to preserve signal
+        scale = max(float(np.max(np.abs(rewards))), 0.5)
         rewards = np.clip(rewards / scale, -1.0, 1.0)
 
         return rewards
