@@ -42,7 +42,7 @@ def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
 
 # FIX-3: raised from 2000 to 10000
 SUP_WARMUP_SIZE        = 10_000
-ENV_REWARD_SCALE       = 10.0
+ENV_REWARD_SCALE       = 50.0
 OMEGA_BIAS_SCALE       = 0.15
 OMEGA_MODULATED_AGENTS = ["bess", "ev"]
 LOCAL_REWARD_SCALE     = 1.0
