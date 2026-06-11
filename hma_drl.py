@@ -66,7 +66,8 @@ class HMADRLFramework:
             "grid": SACAgent(lo_grid, 1, device=d),
         }
 
-        self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_AGENTS, device=d)
+        N_MOD = len(OMEGA_MODULATED_AGENTS)  # = 2
+        self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_MOD, device=d)
 
         self.arw = AdaptiveRewardWeighter(
             obs_dim         = OBS_DIM,
