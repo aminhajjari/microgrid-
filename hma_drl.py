@@ -74,7 +74,7 @@ class HMADRLFramework:
             gamma           = 0.99,
             entropy_coef    = 0.01,
             device          = d,
-            warmup_episodes = 50,
+            warmup_episodes = 100,
         )
 
         self._last_omega      = _softmax(np.zeros(N_AGENTS))
