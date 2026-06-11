@@ -42,7 +42,7 @@ def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
 
 # FIX-3: raised from 2000 to 10000
 SUP_WARMUP_SIZE        = 10_000
-ENV_REWARD_SCALE       = 50.0
+ENV_REWARD_SCALE       = 1.0
 OMEGA_BIAS_SCALE       = 0.15
 OMEGA_MODULATED_AGENTS = ["bess", "ev"]
 LOCAL_REWARD_SCALE     = 1.0
@@ -133,7 +133,7 @@ class HMADRLFramework:
 
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
-        p_grid_val = float(abs(info.get("p_grid", 0.0))) if hasattr(self, '_last_info') else 0.0
+       
         sup_reward = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
         self.supervisor.buffer.store(
             sup_obs, omega, sup_reward, sup_next_obs, float(done)
