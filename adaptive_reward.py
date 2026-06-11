@@ -146,7 +146,7 @@ class AdaptiveRewardWeighter:
         returns  = np.clip(returns, -50.0, 50.0)
         ret_mean = returns.mean()
         # FIX-3: floor std at 1.0 to prevent division-by-near-zero
-        ret_std  = max(float(returns.std()), 1.0)
+        ret_std  = max(float(returns.std()), 0.01)
         returns  = (returns - ret_mean) / ret_std
 
         self._baseline = (
