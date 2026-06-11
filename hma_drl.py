@@ -109,17 +109,19 @@ class HMADRLFramework:
 
         sup_obs   = np.concatenate([obs, local_rewards])
         omega_raw = self.supervisor.select_action(sup_obs, deterministic=not explore)
-        omega     = _softmax(omega_raw)
-        self._last_omega = omega.copy()
-
+        omega_mod = np.tanh(omega_raw)          # 2-dim, in (-1,1)
+        omega_full = np.zeros(N_AGENTS)         # for logging / dot product
+        self._last_omega = omega_mod.copy()
+    
         if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
             for i, name in enumerate(OMEGA_MODULATED_AGENTS):
                 idx = LOCAL_ACT_IDX[name]
                 action[idx] = np.clip(
-                    action[idx] + OMEGA_BIAS_SCALE * (omega[i] - 0.25), -1.0, 1.0
+                    action[idx] + OMEGA_BIAS_SCALE * omega_mod[i], -1.0, 1.0
                 )
+                omega_full[idx] = omega_mod[i]
 
-        return action, omega
+        return action, omega_mod
 
     # ------------------------------------------------------------------
     def store_transitions(self, obs, action, local_rewards, global_reward,
@@ -135,7 +137,8 @@ class HMADRLFramework:
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
        
-        sup_reward = float(np.dot(omega, local_rewards)) * ENV_REWARD_SCALE
+        mod_indices = [LOCAL_ACT_IDX[n] for n in OMEGA_MODULATED_AGENTS]
+        sup_reward  = float(np.dot(omega, local_rewards[mod_indices]))
         self.supervisor.buffer.store(
             sup_obs, omega, sup_reward, sup_next_obs, float(done)
         )
