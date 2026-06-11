@@ -29,7 +29,7 @@ DEVICE     = "cpu"
 OUT_DIR    = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
 
-SMOKE_HMA_VS_SA_MIN      = -10.0
+SMOKE_HMA_VS_SA_MIN      = -2.0
 SMOKE_HMA_VS_FLAT_LOLP_MAX = 2.0
 
 
@@ -194,11 +194,17 @@ def check_smoke_quality(results) -> bool:
         print("  ⚠️  SA reward is extremely negative — environment bug.")
         return False
 
-    if abs(sa_reward) < 1.0:
-       reward_ratio = 1.0 if hma_reward >= sa_reward - 1.0 else 0.0
+    reward_gap = hma_reward - sa_reward   # how much worse HMA is
+    if reward_gap < SMOKE_HMA_VS_SA_MIN:
+        print(
+            f"\n  ❌ GATE 1 FAILED\n"
+            f"     HMA avg_reward = {hma_reward:.2f}\n"
+            f"     SA  avg_reward = {sa_reward:.2f}\n"
+            f"     Gap = {reward_gap:.2f} < allowed {SMOKE_HMA_VS_SA_MIN:.2f}\n"
+        )
+        passed = False
     else:
-        reward_ratio = hma_reward / sa_reward
-    if reward_ratio < SMOKE_HMA_VS_SA_MIN:
+        print(f"  ✓ Gate 1 passed  (HMA−SA gap = {reward_gap:.2f} ≥ {SMOKE_HMA_VS_SA_MIN:.2f})")
       
     
         print(
