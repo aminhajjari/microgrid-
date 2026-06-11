@@ -194,7 +194,7 @@ def check_smoke_quality(results) -> bool:
         print("  ⚠️  SA reward is extremely negative — environment bug.")
         return False
 
-    reward_gap = hma_reward - sa_reward   # how much worse HMA is
+    reward_gap = hma_reward - sa_reward
     if reward_gap < SMOKE_HMA_VS_SA_MIN:
         print(
             f"\n  ❌ GATE 1 FAILED\n"
