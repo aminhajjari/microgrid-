@@ -205,21 +205,6 @@ def check_smoke_quality(results) -> bool:
         passed = False
     else:
         print(f"  ✓ Gate 1 passed  (HMA−SA gap = {reward_gap:.2f} ≥ {SMOKE_HMA_VS_SA_MIN:.2f})")
-      
-    
-        print(
-            f"\n  ❌ GATE 1 FAILED — severe reward regression\n"
-            f"     HMA avg_reward = {hma_reward:.1f}\n"
-            f"     SA  avg_reward = {sa_reward:.1f}\n"
-            f"     HMA/SA ratio   = {reward_ratio:.2f} < required "
-            f"{SMOKE_HMA_VS_SA_MIN:.2f}\n"
-            f"     Check: adaptive_reward.py must be in the same directory.\n"
-            f"     Check: # VERSION: hma_drl v5\n"
-        )
-        passed = False
-    else:
-        print(f"  ✓ Gate 1 passed  (HMA/SA = {reward_ratio:.2f} ≥ "
-              f"{SMOKE_HMA_VS_SA_MIN:.2f})")
 
     ref_lolp = flat_lolp if flat_lolp is not None else sa_lolp
     ref_name = "Flat" if flat_lolp is not None else "SA"
