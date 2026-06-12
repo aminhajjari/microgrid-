@@ -185,6 +185,7 @@ def run_training(
     if method == "hma":
         controller = HMADRLFramework(device=device)
         label      = "Hierarchical MA-DRL (Proposed)"
+        controller.set_scenario(scenario) 
     elif method == "flat":
         controller = FlatMADRL(device=device)
         label      = "Flat MA-DRL"
