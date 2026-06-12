@@ -2,13 +2,6 @@
 demo.py  (v5 — ARW integrated)
 =======
 Smoke test — 60 episodes per method.
-
-CHANGE in v5:
-  HMA now uses ARW (Adaptive Reward Weighting).
-  get_reward_weights(obs) is called each step and passed to env.step().
-  ARW warm-up = 50 episodes, so smoke test (60 ep) is almost entirely
-  in warm-up → behaviour identical to v4 → Gate 1 still passes.
-  update_arw() is called at episode end to train ARWN after warm-up.
 """
 
 import sys
@@ -60,17 +53,13 @@ def run_one(method: str, n_ep: int = N_EPISODES):
 
         for _ in range(env.T):
             if isinstance(ctrl, HMADRLFramework):
-                # ARW: get adaptive weights for this timestep
                 rw = ctrl.get_reward_weights(obs)
                 action, omega = ctrl.select_actions(obs, local_rewards,
                                                     explore=(ep < n_ep * 0.8))
-                # Pass adaptive weights to env
                 nobs, reward, done, _, info = env.step(action, reward_weights=rw)
-                # Record reward for ARW REINFORCE update
                 ctrl.record_reward(reward)
             else:
                 action = ctrl.select_actions(obs, explore=(ep < n_ep * 0.8))
-                # SA and Flat: no reward_weights → uses fixed paper weights
                 nobs, reward, done, _, info = env.step(action)
 
             if isinstance(ctrl, HMADRLFramework):
@@ -93,7 +82,6 @@ def run_one(method: str, n_ep: int = N_EPISODES):
             p_sup_ep.append(info["p_load"] - info["load_loss"])
             obs = nobs
 
-        # ARW episode-end update
         if isinstance(ctrl, HMADRLFramework):
             ctrl.update_arw()
 
