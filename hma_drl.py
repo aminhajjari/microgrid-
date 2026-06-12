@@ -1,18 +1,21 @@
 """
-hma_drl.py  — v2 (fixed)
+hma_drl.py  — v3 (scenario-adaptive ARW)
 
-FIXES vs v1:
-  FIX-1  compute_local_rewards() normalises each agent's reward
-         independently (was dividing by global max, which crushed
-         smaller agents like load to near zero).
-  FIX-2  Load agent reward now includes a cost-saving term so it has
-         genuine incentive to shift load away from peak tariff hours.
-  FIX-3  Supervisor warmup raised from 2,000 to 10,000 steps so it
-         only starts coordinating after local agents have learned
-         basic policies.
+NEW in v3 (on top of all v2 fixes):
+  CHANGE-A  HMADRLFramework gains a set_scenario() method that forwards
+            the scenario string to arw.set_scenario().  Call this once
+            after constructing the controller, before training starts.
+
+  CHANGE-B  get_reward_weights() passes self._scenario to arw.get_weights()
+            so the network always sees the correct one-hot embedding.
+
+  CHANGE-C  AdaptiveRewardWeighter is constructed with n_scenarios=5 so
+            its input layer matches the new network width.
+
+All v2 fixes (FIX-1 … FIX-3) are preserved unchanged.
 """
 
-# VERSION: hma_drl v2
+# VERSION: hma_drl v3
 
 from __future__ import annotations
 
@@ -20,7 +23,9 @@ import numpy as np
 import torch
 
 from agents import TD3Agent, SACAgent
-from adaptive_reward import AdaptiveRewardWeighter
+# ── CHANGE-C: import N_SCENARIOS so constructor stays in sync ─────────────
+from adaptive_reward import AdaptiveRewardWeighter, N_SCENARIOS
+# ──────────────────────────────────────────────────────────────────────────
 from microgrid_constants import DT, GAMMA, P_BESS_MAX, KAPPA, ZETA
 
 OBS_DIM  = 7
@@ -40,7 +45,6 @@ def local_obs(obs: np.ndarray, agent: str) -> np.ndarray:
     return obs[LOCAL_OBS_IDX[agent]]
 
 
-# FIX-3: raised from 2000 to 10000
 SUP_WARMUP_SIZE        = 10_000
 ENV_REWARD_SCALE       = 1.0
 OMEGA_BIAS_SCALE       = 0.15
@@ -49,7 +53,7 @@ LOCAL_REWARD_SCALE     = 1.0
 
 
 class HMADRLFramework:
-    """Hierarchical MA-DRL with Adaptive Reward Weighting."""
+    """Hierarchical MA-DRL with Scenario-Adaptive Reward Weighting."""
 
     def __init__(self, device: str = "cpu"):
         d = device
@@ -69,22 +73,45 @@ class HMADRLFramework:
         N_MOD = len(OMEGA_MODULATED_AGENTS)  # = 2
         self.supervisor = SACAgent(OBS_DIM + N_AGENTS, N_MOD, device=d)
 
+        # ── CHANGE-C: pass n_scenarios so network input width is correct ───
         self.arw = AdaptiveRewardWeighter(
             obs_dim         = OBS_DIM,
+            n_scenarios     = N_SCENARIOS,
             lr              = 1e-3,
             gamma           = 0.99,
             entropy_coef    = 0.01,
             device          = d,
             warmup_episodes = 100,
         )
+        # ──────────────────────────────────────────────────────────────────
+
+        # ── CHANGE-A: store current scenario, default "normal" ─────────────
+        self._scenario        = "normal"
+        # ──────────────────────────────────────────────────────────────────
 
         self._last_omega      = _softmax(np.zeros(N_AGENTS))
         self._device          = torch.device(d)
         self.best_eval_reward = -np.inf
 
+    # ── CHANGE-A: new public method ────────────────────────────────────────
+    def set_scenario(self, scenario: str):
+        """
+        Call once after construction, before training starts.
+        Forwards the scenario to the ARW so it uses the correct one-hot.
+
+        Example:
+            ctrl = HMADRLFramework(device="cuda")
+            ctrl.set_scenario("crit_load")
+        """
+        self._scenario = scenario
+        self.arw.set_scenario(scenario)
+    # ──────────────────────────────────────────────────────────────────────
+
     # ------------------------------------------------------------------
     def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
-        return self.arw.get_weights(obs)
+        # ── CHANGE-B: pass scenario so network sees the one-hot ───────────
+        return self.arw.get_weights(obs, scenario=self._scenario)
+        # ──────────────────────────────────────────────────────────────────
 
     def record_reward(self, reward: float):
         self.arw.record(reward)
@@ -109,10 +136,10 @@ class HMADRLFramework:
 
         sup_obs   = np.concatenate([obs, local_rewards])
         omega_raw = self.supervisor.select_action(sup_obs, deterministic=not explore)
-        omega_mod = np.tanh(omega_raw)          # 2-dim, in (-1,1)
-        omega_full = np.zeros(N_AGENTS)         # for logging / dot product
+        omega_mod = np.tanh(omega_raw)
+        omega_full = np.zeros(N_AGENTS)
         self._last_omega = omega_mod.copy()
-    
+
         if self.supervisor.buffer.size >= SUP_WARMUP_SIZE:
             for i, name in enumerate(OMEGA_MODULATED_AGENTS):
                 idx = LOCAL_ACT_IDX[name]
@@ -136,9 +163,8 @@ class HMADRLFramework:
 
         sup_obs      = np.concatenate([obs,      prev_local_rewards])
         sup_next_obs = np.concatenate([next_obs, local_rewards])
-       
-        mod_indices = [LOCAL_ACT_IDX[n] for n in OMEGA_MODULATED_AGENTS]
-        sup_reward  = float(np.dot(omega, local_rewards[mod_indices]))
+        mod_indices  = [LOCAL_ACT_IDX[n] for n in OMEGA_MODULATED_AGENTS]
+        sup_reward   = float(np.dot(omega, local_rewards[mod_indices]))
         self.supervisor.buffer.store(
             sup_obs, omega, sup_reward, sup_next_obs, float(done)
         )
@@ -165,24 +191,14 @@ class HMADRLFramework:
         p_grid = info.get("p_grid",    0.0)
         ll     = info.get("load_loss", 0.0)
 
-        # BESS: reward efficient discharge, penalise degradation
         r_bess = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-
-        # EV: small reward for managed charging
-        r_ev = -abs(p_ev) * 0.001
-
-        # Load: penalise deviation from baseline comfort
+        r_ev   = -abs(p_ev) * 0.001
         r_load = -abs(p_flex - 30.0) * ZETA * 0.1
-
-        # Grid: HARD penalty for load loss, mild penalty for grid import
         r_grid = -ll * 2.0 - lam * max(0.0, p_grid) * DT * 0.1
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
-
-        # Normalise by global scale, floor at 0.5 to preserve signal
-        scale = max(float(np.max(np.abs(rewards))), 0.5)
+        scale   = max(float(np.max(np.abs(rewards))), 0.5)
         rewards = np.clip(rewards / scale, -1.0, 1.0)
-
         return rewards
 
     # ------------------------------------------------------------------
