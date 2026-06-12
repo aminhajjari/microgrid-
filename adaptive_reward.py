@@ -1,20 +1,20 @@
 """
-adaptive_reward.py  — v2 (fixed)
+adaptive_reward.py  — v3 (scenario-adaptive ARW)
 
-FIXES vs v1:
-  FIX-1  Exploration std changed from proportional (weight_means*0.05)
-         to fixed (0.02).  Proportional std caused log_prob to grow as
-         weights grew, eventually producing gradients that blew out the
-         network, locking ARW_loss at -100 permanently.
-  FIX-2  Raw returns clipped to [-50, 50] before normalisation.
-  FIX-3  Std floor raised to 1.0 (was 1e-8) so normalisation never
-         divides by near-zero.
-  FIX-4  Advantage clip tightened from ±5 to ±2.
-  FIX-5  Policy and entropy loss clipped separately before summing
-         (tighter bounds: ±10 and ±1 respectively).
-  FIX-6  Gradient clip tightened from 0.5 to 0.1.
-  FIX-7  Network weights clamped to [-5, 5] after every update to
-         prevent runaway parameters.
+NEW in v3:
+  CHANGE-1  AdaptiveRewardWeightNetwork now accepts a scenario one-hot
+            embedding concatenated to the obs input (obs_dim + N_SCENARIOS).
+            This lets the ARW learn different weight priorities per scenario
+            (normal / crit_load / pv_outage / dynamic_price / high_res).
+
+  CHANGE-2  AdaptiveRewardWeighter.get_weights() gains a `scenario` kwarg
+            (default "normal" — fully backward-compatible).
+            The one-hot is built internally; callers just pass a string.
+
+  CHANGE-3  AdaptiveRewardWeighter.__init__() gains an `n_scenarios` param
+            and passes obs_dim + n_scenarios to the network.
+
+All v2 fixes (FIX-1 … FIX-7) are preserved unchanged.
 """
 
 from __future__ import annotations
@@ -30,12 +30,22 @@ BASE_WEIGHTS      = np.array([1.0, 0.3, 0.2, 0.5], dtype=np.float32)
 BASE_WEIGHTS_NORM = BASE_WEIGHTS / BASE_WEIGHTS.sum()
 WEIGHT_SCALE      = float(BASE_WEIGHTS.sum())   # 2.0
 
+# ── CHANGE-1 ──────────────────────────────────────────────────────────────
+SCENARIOS   = ["normal", "crit_load", "pv_outage", "dynamic_price", "high_res"]
+N_SCENARIOS = len(SCENARIOS)                          # 5
+SCENARIO_IDX = {s: i for i, s in enumerate(SCENARIOS)}
+# ──────────────────────────────────────────────────────────────────────────
+
 
 class AdaptiveRewardWeightNetwork(nn.Module):
-    def __init__(self, obs_dim: int = 7, hidden: Tuple[int, int] = (32, 16)):
+    # ── CHANGE-1: input is now obs_dim + n_scenarios ───────────────────────
+    def __init__(self, obs_dim: int = 7,
+                 n_scenarios: int = N_SCENARIOS,
+                 hidden: Tuple[int, int] = (32, 16)):
         super().__init__()
+        in_dim = obs_dim + n_scenarios                # e.g. 7 + 5 = 12
         self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden[0]),
+            nn.Linear(in_dim, hidden[0]),
             nn.ReLU(),
             nn.Linear(hidden[0], hidden[1]),
             nn.ReLU(),
@@ -46,6 +56,7 @@ class AdaptiveRewardWeightNetwork(nn.Module):
             self.net[-1].bias.copy_(
                 torch.tensor(np.log(BASE_WEIGHTS_NORM + 1e-8).astype(np.float32))
             )
+    # ──────────────────────────────────────────────────────────────────────
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         logits  = self.net(obs)
@@ -56,12 +67,14 @@ class AdaptiveRewardWeightNetwork(nn.Module):
 class AdaptiveRewardWeighter:
     """
     REINFORCE-trained wrapper around AdaptiveRewardWeightNetwork.
+    Now scenario-aware: pass scenario="crit_load" etc. to get_weights().
 
     Usage:
         arw = AdaptiveRewardWeighter()
+        arw.set_scenario("crit_load")       # ← set once per training run
 
         # each timestep:
-        weights = arw.get_weights(obs)          # → np.ndarray [w_c,w_b,w_e,w_s]
+        weights = arw.get_weights(obs)      # → np.ndarray [w_c,w_b,w_e,w_s]
         arw.record(reward)
 
         # each episode end:
@@ -71,6 +84,9 @@ class AdaptiveRewardWeighter:
     def __init__(
         self,
         obs_dim:         int   = 7,
+        # ── CHANGE-3: new param, default keeps backward-compat ────────────
+        n_scenarios:     int   = N_SCENARIOS,
+        # ──────────────────────────────────────────────────────────────────
         lr:              float = 1e-3,
         gamma:           float = 0.99,
         entropy_coef:    float = 0.01,
@@ -82,8 +98,14 @@ class AdaptiveRewardWeighter:
         self.entropy_coef    = entropy_coef
         self.warmup_episodes = warmup_episodes
         self._episode        = 0
+        # ── CHANGE-2: store current scenario ──────────────────────────────
+        self._scenario       = "normal"
+        self.n_scenarios     = n_scenarios
+        # ──────────────────────────────────────────────────────────────────
 
-        self.net = AdaptiveRewardWeightNetwork(obs_dim).to(self.device)
+        # ── CHANGE-3: pass n_scenarios to network ─────────────────────────
+        self.net = AdaptiveRewardWeightNetwork(obs_dim, n_scenarios).to(self.device)
+        # ──────────────────────────────────────────────────────────────────
         self.opt = torch.optim.Adam(self.net.parameters(), lr=lr)
 
         self._log_probs: list = []
@@ -93,19 +115,45 @@ class AdaptiveRewardWeighter:
         self._baseline       = 0.0
         self._baseline_alpha = 0.05
 
+    # ── CHANGE-2: new setter ───────────────────────────────────────────────
+    def set_scenario(self, scenario: str):
+        """Call once when the scenario changes (e.g. at the start of a run)."""
+        if scenario not in SCENARIO_IDX:
+            raise ValueError(f"Unknown scenario '{scenario}'. "
+                             f"Valid: {list(SCENARIO_IDX.keys())}")
+        self._scenario = scenario
+    # ──────────────────────────────────────────────────────────────────────
+
+    # ── CHANGE-2: internal helper ──────────────────────────────────────────
+    def _scenario_onehot(self) -> np.ndarray:
+        oh = np.zeros(self.n_scenarios, dtype=np.float32)
+        oh[SCENARIO_IDX[self._scenario]] = 1.0
+        return oh
+    # ──────────────────────────────────────────────────────────────────────
+
     @property
     def is_warming_up(self) -> bool:
         return self._episode < self.warmup_episodes
 
     # ------------------------------------------------------------------
-    def get_weights(self, obs: np.ndarray) -> np.ndarray:
+    def get_weights(self, obs: np.ndarray,
+                    scenario: str = None) -> np.ndarray:
+        # ── CHANGE-2: scenario kwarg overrides stored scenario if given ────
+        if scenario is not None:
+            self._scenario = scenario
+        # ──────────────────────────────────────────────────────────────────
+
         if self.is_warming_up:
             return BASE_WEIGHTS.copy()
 
-        obs_t        = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        # ── CHANGE-2: build augmented obs with scenario one-hot ───────────
+        obs_aug = np.concatenate([obs, self._scenario_onehot()])
+        obs_t   = torch.FloatTensor(obs_aug).unsqueeze(0).to(self.device)
+        # ──────────────────────────────────────────────────────────────────
+
         weight_means = self.net(obs_t).squeeze(0)
 
-        # FIX-1: fixed std = 0.02 (was weight_means * 0.05, which grew without bound)
+        # FIX-1: fixed std = 0.02
         std   = torch.full_like(weight_means, 0.02)
         noise = torch.randn_like(weight_means) * std
 
@@ -142,10 +190,10 @@ class AdaptiveRewardWeighter:
             G          = self._rewards[t] + self.gamma * G
             returns[t] = G
 
-        # FIX-2: clip raw returns before normalising
+        # FIX-2
         returns  = np.clip(returns, -50.0, 50.0)
         ret_mean = returns.mean()
-        # FIX-3: floor std at 1.0 to prevent division-by-near-zero
+        # FIX-3
         ret_std  = max(float(returns.std()), 0.01)
         returns  = (returns - ret_mean) / ret_std
 
@@ -160,23 +208,23 @@ class AdaptiveRewardWeighter:
         entropy_loss = torch.zeros(1, device=self.device)
 
         for i in range(n):
-            # FIX-4: tighter advantage clip (was ±5)
+            # FIX-4
             advantage    = max(-2.0, min(2.0, float(ret_tensor[i]) - self._baseline))
             policy_loss  = policy_loss  - self._log_probs[i] * advantage
             entropy_loss = entropy_loss - self._entropies[i]
 
-        # FIX-5: clip components separately before summing (much tighter bounds)
+        # FIX-5
         pl         = torch.clamp(policy_loss  / n, -10.0, 10.0)
         el         = torch.clamp(self.entropy_coef * entropy_loss / n, -1.0, 1.0)
         total_loss = pl + el
 
         self.opt.zero_grad()
         total_loss.backward()
-        # FIX-6: tighter gradient clip (was 0.5)
+        # FIX-6
         torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.1)
         self.opt.step()
 
-        # FIX-7: clamp network weights to prevent runaway parameters
+        # FIX-7
         with torch.no_grad():
             for p in self.net.parameters():
                 p.clamp_(-5.0, 5.0)
@@ -191,6 +239,9 @@ class AdaptiveRewardWeighter:
             "arw_episode":  self._episode,
             "arw_return":   float(ret_mean),
             "arw_baseline": float(self._baseline),
+            # ── CHANGE-2: log current scenario for monitoring ──────────────
+            "arw_scenario": self._scenario,
+            # ──────────────────────────────────────────────────────────────
         }
 
     # ------------------------------------------------------------------
@@ -200,6 +251,9 @@ class AdaptiveRewardWeighter:
             "opt":      self.opt.state_dict(),
             "episode":  self._episode,
             "baseline": self._baseline,
+            # ── CHANGE-2: persist scenario so checkpoints reload cleanly ───
+            "scenario": self._scenario,
+            # ──────────────────────────────────────────────────────────────
         }
 
     def load_state_dict(self, d: dict):
@@ -207,3 +261,6 @@ class AdaptiveRewardWeighter:
         self.opt.load_state_dict(d["opt"])
         self._episode  = d.get("episode",  0)
         self._baseline = d.get("baseline", 0.0)
+        # ── CHANGE-2: restore scenario from checkpoint ─────────────────────
+        self._scenario = d.get("scenario", "normal")
+        # ──────────────────────────────────────────────────────────────────
