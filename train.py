@@ -488,7 +488,8 @@ if __name__ == "__main__":
         results.append(res)
 
     if len(results) > 1:
-        print_comparison_table(results)
+        rule_baseline = compute_rule_based_baseline(n_episodes=50)
+        print_comparison_table(results, rule_based_baseline=rule_baseline)
 
     out_dir = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
     plot_all_results(results, out_dir)
