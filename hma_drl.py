@@ -209,7 +209,20 @@ class HMADRLFramework:
             _save_hma_weights(self, save_dir, method)
             return True
         return False
+# __________________________________
+# HMA Fixed Weights ablation — no ARW, uses paper's fixed weights
+# ---------------------------------------------------------------------------
+class HMADRLFixedWeights(HMADRLFramework):
+    """Ablation: HMA without ARW — uses fixed paper weights."""
+    def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
+        # Fixed weights from paper Section 2.4.1
+        return np.array([1.0, 0.3, 0.2, 0.5], dtype=np.float32)
 
+    def record_reward(self, reward: float):
+        pass  # no ARW update
+
+    def update_arw(self) -> dict:
+        return {}
 
 # ---------------------------------------------------------------------------
 # Flat MA-DRL baseline — unchanged
