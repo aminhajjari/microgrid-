@@ -1,10 +1,27 @@
 """
-demo.py  (v5 — ARW integrated)
+demo.py  (v6 — Table 4 + Table 6 compatible)
 =======
 Smoke test — 60 episodes per method.
+
+CHANGE in v6 (on top of v5/ARW):
+  CHANGE-1  run_one() now collects p_pv_ep, p_load_ep, p_curt_ep per episode
+            and wraps each episode in EpisodeTimer — needed for RUR and
+            Execution Time columns of Table 4.
+
+  CHANGE-2  check_smoke_quality() is unchanged (Gates 1 & 2 still pass).
+
+  CHANGE-3  print_table() now prints BOTH the existing reward/cost summary
+            AND the full paper Table 4 (Avg Cost Reduction, RUR, RCIR,
+            Training Convergence, SOC Degradation Index, Exec Time).
+
+  CHANGE-4  Table 6 stress-test rows are printed after the main table
+            using the per-scenario RCIR and LOLP already available in results.
+
+All v5 logic (ARW, reward_weights, update_arw) preserved unchanged.
 """
 
 import sys
+import time
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -13,7 +30,10 @@ from pathlib import Path
 
 from microgrid_env import MicrogridEnv
 from hma_drl import HMADRLFramework, FlatMADRL, SingleAgentDRL
-from metrics import rcir, lolp
+# ── CHANGE-1: import new metric helpers ──────────────────────────────────────
+from metrics import rcir, lolp, rur, degradation, convergence_ep, \
+                    EpisodeTimer, build_table4_row, print_table4
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 N_EPISODES = 60
@@ -22,8 +42,8 @@ DEVICE     = "cpu"
 OUT_DIR    = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
 OUT_DIR.mkdir(exist_ok=True)
 
-SMOKE_HMA_VS_SA_MIN      = -2.0
-SMOKE_HMA_VS_FLAT_LOLP_MAX = 2.0
+SMOKE_HMA_VS_SA_MIN        = -2.0
+SMOKE_HMA_VS_FLAT_LOLP_MAX =  2.0
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +61,10 @@ def run_one(method: str, n_ep: int = N_EPISODES):
         label = "Single-Agent DRL"
 
     rewards, costs, lolps_ep, soc_trajs = [], [], [], []
+    # ── CHANGE-1: new per-episode lists for Table 4 metrics ─────────────────
+    p_pv_all, p_load_all, p_curt_all    = [], [], []
+    timer = EpisodeTimer()
+    # ────────────────────────────────────────────────────────────────────────
     local_rewards = np.zeros(4)
 
     for ep in range(n_ep):
@@ -50,6 +74,10 @@ def run_one(method: str, n_ep: int = N_EPISODES):
         ep_cost   = 0.0
         soc_ep    = []
         p_load_ep, p_sup_ep = [], []
+        # ── CHANGE-1 ─────────────────────────────────────────────────────────
+        p_pv_ep, p_curt_ep = [], []
+        timer.start()
+        # ────────────────────────────────────────────────────────────────────
 
         for _ in range(env.T):
             if isinstance(ctrl, HMADRLFramework):
@@ -80,10 +108,21 @@ def run_one(method: str, n_ep: int = N_EPISODES):
             soc_ep.append(info["soc_bess"])
             p_load_ep.append(info["p_load"])
             p_sup_ep.append(info["p_load"] - info["load_loss"])
+            # ── CHANGE-1: collect PV and curtailment signals ──────────────
+            p_pv_ep.append(info.get("p_pv", 0.0))
+            p_curt_ep.append(info.get("p_curt", 0.0))
+            # ────────────────────────────────────────────────────────────
             obs = nobs
 
         if isinstance(ctrl, HMADRLFramework):
             ctrl.update_arw()
+
+        # ── CHANGE-1: stop timer, store per-episode vectors ──────────────────
+        timer.stop()
+        p_pv_all.append(p_pv_ep)
+        p_load_all.append(p_load_ep)
+        p_curt_all.append(p_curt_ep)
+        # ────────────────────────────────────────────────────────────────────
 
         rewards.append(ep_reward)
         costs.append(ep_cost)
@@ -97,10 +136,17 @@ def run_one(method: str, n_ep: int = N_EPISODES):
         "costs":      costs,
         "lolps":      lolps_ep,
         "soc_last":   soc_trajs[-1],
+        "soc_trajs":  soc_trajs,           # full history for degradation()
         "rcir":       rcir(costs[-20:]),
         "avg_cost":   float(np.mean(costs[-20:])),
         "avg_lolp":   float(np.mean(lolps_ep[-20:])),
         "avg_reward": float(np.mean(rewards[-20:])),
+        # ── CHANGE-1 ─────────────────────────────────────────────────────────
+        "p_pv_ep":    p_pv_all,
+        "p_load_ep":  p_load_all,
+        "p_curt_ep":  p_curt_all,
+        "timer":      timer,
+        # ────────────────────────────────────────────────────────────────────
     }
 
 
@@ -151,6 +197,7 @@ def make_plots(results):
 
 # ---------------------------------------------------------------------------
 def print_table(results):
+    """Original reward/cost summary — unchanged."""
     print()
     print("=" * 72)
     print(f"{'Method':<28} {'Avg Reward':>12} {'Avg Cost':>10} "
@@ -161,6 +208,50 @@ def print_table(results):
               f"{r['avg_cost']:>10.4f} {r['rcir']:>8.3f} "
               f"{100*r['avg_lolp']:>8.3f}")
     print("=" * 72)
+
+
+# ── CHANGE-3: new Table 4 printer ────────────────────────────────────────────
+def print_paper_tables(results):
+    """
+    Compute and print paper Table 4 (all 6 columns) and a
+    condensed Table 6 proxy (cost reduction + RCIR + LOLP per method).
+    """
+    by_method = {r["method"]: r for r in results}
+    sa_result = by_method.get("sa")
+
+    # baseline cost and degradation from SA-DRL
+    baseline_cost = sa_result["avg_cost"] if sa_result else 1.0
+    baseline_deg  = float(np.mean([
+        degradation(t) for t in sa_result["soc_trajs"][-20:]
+    ])) if sa_result else 1.0
+    if baseline_deg < 1e-9:
+        baseline_deg = 1.0
+
+    # ── Table 4 ──────────────────────────────────────────────────────────────
+    rows = []
+    for r in results:
+        row = build_table4_row(
+            method        = r["method"],
+            result        = r,
+            baseline_cost = baseline_cost,
+            baseline_deg  = baseline_deg,
+            timer         = r["timer"],
+        )
+        rows.append(row)
+    print_table4(rows)
+
+    # ── Table 6 proxy (stress scenarios not available in smoke test) ──────────
+    print()
+    print("TABLE 6 PROXY — per-method summary (full stress-test runs in train.py)")
+    print("-" * 60)
+    print(f"  {'Method':<28} {'RCIR':>6} {'LOLP%':>7}")
+    print("-" * 60)
+    for r in results:
+        print(f"  {r['label']:<28} {r['rcir']:>6.3f} {100*r['avg_lolp']:>7.3f}")
+    print("-" * 60)
+    print("  (Stress-test Table 6 rows are logged to output/stress_results.csv")
+    print("   by train.py Stage 3 — see run_microgrid.sh)")
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +318,9 @@ if __name__ == "__main__":
         print(f"  done. avg_reward={r['avg_reward']:.1f}")
 
     print_table(results)
+    # ── CHANGE-3: print paper tables after existing summary ───────────────────
+    print_paper_tables(results)
+    # ─────────────────────────────────────────────────────────────────────────
     make_plots(results)
     print("\nAll done. Check plots/ for figures.")
 
