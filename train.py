@@ -189,6 +189,12 @@ def run_training(
     elif method == "flat":
         controller = FlatMADRL(device=device)
         label      = "Flat MA-DRL"
+
+    elif method == "hma_fixed":
+        from hma_drl import HMADRLFixedWeights
+        controller = HMADRLFixedWeights(device=device)
+        label      = "HMA + Fixed Weights"
+  
     else:
         controller = SingleAgentDRL(device=device)
         label      = "Single-Agent DRL"
@@ -524,6 +530,10 @@ if __name__ == "__main__":
     if len(results) > 1:
         rule_baseline = compute_rule_based_baseline(n_episodes=50)
         print_comparison_table(results, rule_based_baseline=rule_baseline)
+        fixed_r    = next((r for r in results if r["method"] == "hma_fixed"), None)
+        arw_r      = next((r for r in results if r["method"] == "hma"), None)
+        if fixed_r and arw_r:
+            print_novelty_table(fixed_r, arw_r, arw_r)
 
     out_dir = Path("/home/gkianfar/scratch/Amin/MSH/output/plots")
     plot_all_results(results, out_dir)
