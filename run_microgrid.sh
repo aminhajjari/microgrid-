@@ -236,6 +236,13 @@ done
 echo "✓ All 10 seeds done"
 echo ""
 
+# Stage 2c — HMA with fixed weights (ARW ablation)
+python train.py \
+    --method   hma_fixed \
+    --scenario normal    \
+    --episodes 5000      \
+    --device   cuda
+
 # ==============================
 # STAGE 3 — STRESS EVALUATION
 # ==============================
