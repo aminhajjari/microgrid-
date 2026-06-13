@@ -457,6 +457,40 @@ def _convergence_episode(rewards: list, pct: float = 0.95) -> int:
     return len(rewards)
 
 
+#________________________________________________
+
+def print_novelty_table(results_fixed: dict, results_arw: dict, 
+                        results_scenario: dict):
+    """
+    Prints the ablation table showing contribution of each novelty.
+    Call after running all three HMA variants.
+    """
+    print("\n" + "=" * 90)
+    print("NOVELTY CONTRIBUTION TABLE")
+    print(f"{'Variant':<35} {'CostRed%':>8} {'RUR':>6} {'RCIR':>6} "
+          f"{'Deg.Idx':>8} {'LOLP%':>7}")
+    print("=" * 90)
+
+    baseline_cost = results_fixed["avg_cost_last50"]  # fixed weights as baseline
+
+    for label, r in [
+        ("HMA + Fixed Weights (base)",    results_fixed),
+        ("HMA + ARW (novelty 1)",         results_arw),
+        ("HMA + Scenario-ARW (novelty 2)", results_scenario),
+    ]:
+        cost_red = max(0.0, 100.0 * (1.0 - r["avg_cost_last50"] / baseline_cost))
+        sa_deg   = results_fixed["avg_deg_last50"]
+        deg_rel  = r["avg_deg_last50"] / sa_deg if sa_deg > 0 else 1.0
+        print(
+            f"{label:<35} "
+            f"{cost_red:>8.1f} "
+            f"{r['avg_rur_last50']:>6.3f} "
+            f"{r['rcir']:>6.3f} "
+            f"{deg_rel:>8.3f} "
+            f"{100.0 * r['avg_lolp']:>7.3f}"
+        )
+    print("=" * 90)
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
