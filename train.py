@@ -359,45 +359,89 @@ def plot_all_results(results: list, out_dir: Path):
     print(f"\nPlots saved to: {out_dir}")
 
 
+
+# _____________________________________________________________________
+def compute_rule_based_baseline(n_episodes: int = 50) -> float:
+    """
+    Fixed-dispatch baseline: no storage, no flexibility actions.
+    All load served from grid only. Used as cost denominator for
+    cost reduction % — same reference as the paper's Table 4.
+    """
+    env = MicrogridEnv(episode_seed=0, domain_randomize=False)
+    costs = []
+    for ep in range(n_episodes):
+        env.episode_seed = ep
+        obs, _ = env.reset()
+        ep_cost = 0.0
+        for _ in range(env.T):
+            action = np.zeros(4)  # no BESS, no EV, no flex shift, no export
+            _, _, done, _, info = env.step(action)
+            ep_cost += info["tariff"] * max(0, info["p_grid"])
+        costs.append(ep_cost)
+    baseline = float(np.mean(costs))
+    print(f"  Rule-based baseline cost: {baseline:.4f}")
+    return baseline
 # ---------------------------------------------------------------------------
 # FIX-3: updated comparison table with all 8 paper Table 4 columns
 # ---------------------------------------------------------------------------
-def print_comparison_table(results: list):
-    sa_deg  = next((r["avg_deg_last50"]   for r in results if r["method"] == "sa"), 1.0)
-    sa_cost = next((r["avg_cost_last50"]  for r in results if r["method"] == "sa"), None)
-    if sa_cost is None or sa_cost <= 0:
-        sa_cost = max((r["avg_cost_last50"] for r in results), default=1.0) + 1e-9
+def print_comparison_table(results: list, rule_based_baseline: float = None):
+    # ── cost baseline ──────────────────────────────────────────────────────
+    if rule_based_baseline is not None and rule_based_baseline > 0:
+        baseline_cost = rule_based_baseline
+    else:
+        # fallback if baseline wasn't computed
+        baseline_cost = max(
+            (r["avg_cost_last50"] for r in results), default=1.0
+        ) + 1e-9
+
+    # ── degradation baseline (SA-DRL = 1.0 reference) ─────────────────────
+    sa_deg = next(
+        (r["avg_deg_last50"] for r in results if r["method"] == "sa"), 1.0
+    )
     if sa_deg <= 0:
         sa_deg = 1.0
 
-    print("\n" + "="*118)
-    print(f"{'Method':<30} {'CostRed%':>8} {'RUR':>6} {'RCIR':>6} "
-          f"{'Conv.Ep':>8} {'Deg.Idx':>8} {'s/ep':>6} {'LOLP%':>7}")
-    print("="*118)
+    # ── header ─────────────────────────────────────────────────────────────
+    print("\n" + "=" * 118)
+    print(
+        f"{'Method':<30} {'CostRed%':>8} {'RUR':>6} {'RCIR':>6} "
+        f"{'Conv.Ep':>8} {'Deg.Idx':>8} {'s/ep':>6} {'LOLP%':>7}"
+    )
+    print("=" * 118)
+
+    # ── your results ───────────────────────────────────────────────────────
     for r in results:
-        cost_red = max(0.0, 100.0 * (1.0 - r["avg_cost_last50"] / sa_cost))
+        cost_red = max(0.0, 100.0 * (1.0 - r["avg_cost_last50"] / baseline_cost))
         deg_rel  = r["avg_deg_last50"] / sa_deg
         ep_conv  = _convergence_episode(r.get("rewards", []))
         tag      = " [+ARW]" if r["method"] == "hma" else ""
         print(
-            f"{r['label']+tag:<30} "
+            f"{r['label'] + tag:<30} "
             f"{cost_red:>8.1f} "
             f"{r['avg_rur_last50']:>6.3f} "
             f"{r['rcir']:>6.3f} "
             f"{ep_conv:>8d} "
             f"{deg_rel:>8.3f} "
             f"{r['avg_exec_time']:>6.3f} "
-            f"{100.0*r['avg_lolp']:>7.3f}"
+            f"{100.0 * r['avg_lolp']:>7.3f}"
         )
-    print("="*118)
+
+    # ── paper Table 4 targets for direct comparison ────────────────────────
+    print("=" * 118)
     print("\n  Paper Table 4 targets:")
-    print(f"  {'SA-DRL':<30} {'10.0':>8} {'0.680':>6} {'0.700':>6} "
-          f"{'4800':>8} {'1.000':>8} {'0.450':>6} {'4.500':>7}")
-    print(f"  {'Flat MA-DRL':<30} {'18.0':>8} {'0.770':>6} {'0.790':>6} "
-          f"{'3400':>8} {'0.880':>8} {'0.320':>6} {'2.800':>7}")
-    print(f"  {'HMA-DRL (paper claim)':<30} {'27.0':>8} {'0.870':>6} {'0.900':>6} "
-          f"{'2200':>8} {'0.750':>8} {'0.280':>6} {'1.500':>7}")
-    print("="*118)
+    print(
+        f"  {'SA-DRL':<30} {'10.0':>8} {'0.680':>6} {'0.700':>6} "
+        f"{'4800':>8} {'1.000':>8} {'0.450':>6} {'4.500':>7}"
+    )
+    print(
+        f"  {'Flat MA-DRL':<30} {'18.0':>8} {'0.770':>6} {'0.790':>6} "
+        f"{'3400':>8} {'0.880':>8} {'0.320':>6} {'2.800':>7}"
+    )
+    print(
+        f"  {'HMA-DRL (paper)':<30} {'27.0':>8} {'0.870':>6} {'0.900':>6} "
+        f"{'2200':>8} {'0.750':>8} {'0.280':>6} {'1.500':>7}"
+    )
+    print("=" * 118)
 
 
 def _convergence_episode(rewards: list, pct: float = 0.95) -> int:
