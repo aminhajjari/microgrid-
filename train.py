@@ -500,7 +500,7 @@ def print_novelty_table(results_fixed: dict, results_arw: dict,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method",    default="all", choices=["all","hma","flat","sa","hma_fixed"]])
+    parser.add_argument("--method",    default="all", choices=["all","hma","flat","sa","hma_fixed"])
     parser.add_argument("--episodes",  type=int, default=10000)  
     parser.add_argument("--batch",     type=int, default=256)
     parser.add_argument("--device",    default="cpu")
