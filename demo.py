@@ -31,7 +31,7 @@ from pathlib import Path
 from microgrid_env import MicrogridEnv
 from hma_drl import HMADRLFramework, FlatMADRL, SingleAgentDRL
 # ── CHANGE-1: import new metric helpers ──────────────────────────────────────
-from metrics import rcir, lolp, rur, degradation, convergence_ep, \
+from metrics_v2 import rcir, lolp, rur, degradation, convergence_ep, \
                     EpisodeTimer, build_table4_row, print_table4
 # ─────────────────────────────────────────────────────────────────────────────
 
