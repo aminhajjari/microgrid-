@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 
 from microgrid_env import MicrogridEnv
 from hma_drl import HMADRLFramework, FlatMADRL, SingleAgentDRL, _softmax, _save_hma_weights
-from metrics import battery_degradation
+from metrics_v2 import battery_degradation
 
 
 WARMUP_STEPS         = 2000
