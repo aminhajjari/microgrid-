@@ -29,7 +29,7 @@ export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 echo ""
 echo "--- 0. import check ---"
-python -c "from metrics import rur, degradation, convergence_ep, EpisodeTimer, build_table4_row, print_table4; print('imports OK')"
+python -c "from metrics_v2 import rur, degradation, convergence_ep, EpisodeTimer, build_table4_row, print_table4; print('imports OK')"
 
 echo ""
 echo "--- 1. quick_check.py ---"
