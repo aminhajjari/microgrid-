@@ -192,10 +192,15 @@ class HMADRLFramework:
         p_grid = info.get("p_grid",    0.0)
         ll     = info.get("load_loss", 0.0)
 
-        r_bess = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-        r_ev   = -abs(p_ev) * 0.001
-        r_load = -abs(p_flex - 30.0) * ZETA * 0.1
-        r_grid = -ll * 2.0 - lam * max(0.0, p_grid) * DT * 0.1
+        imp    = max(0.0, p_grid)            # actual grid import
+        imp_nb = max(0.0, p_grid + p_bess)   # import if BESS had done nothing
+        imp_ne = max(0.0, p_grid + p_ev)     # import if EV   had done nothing
+
+        # difference rewards: credit each agent for the import cost it removed
+        r_bess = lam * (imp_nb - imp) * DT - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
+        r_ev   = lam * (imp_ne - imp) * DT - abs(p_ev) * 0.001
+        r_load = -abs(p_flex - 30.0) * ZETA * 0.1 - lam * imp * DT * 0.05
+        r_grid = -ll * 2.0 - lam * imp * DT * 0.1
 
         rewards = np.array([r_bess, r_ev, r_load, r_grid], dtype=np.float32)
         scale   = max(float(np.max(np.abs(rewards))), 0.5)
