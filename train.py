@@ -43,7 +43,7 @@ def warmup_buffer(env, controller, steps: int = WARMUP_STEPS):
             nobs, rew, done, _, info = env.step(action, reward_weights=rw)
             controller.record_reward(rew)
             lr    = controller.compute_local_rewards(info)
-            omega = _softmax(np.zeros(4))
+            omega = np.zeros(2)   # supervisor acts only on bess+ev (N_MOD=2), not 4
             controller.store_transitions(obs, action, lr, rew, nobs, done, np.zeros(4), omega)
         elif isinstance(controller, FlatMADRL):
             nobs, rew, done, _, info = env.step(action)
