@@ -197,8 +197,8 @@ class HMADRLFramework:
         imp_ne = max(0.0, p_grid + p_ev)     # import if EV   had done nothing
 
         # difference rewards: credit each agent for the import cost it removed
-        r_bess = lam * (imp_nb - imp) * DT - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-        r_ev   = lam * (imp_ne - imp) * DT - abs(p_ev) * 0.001
+        r_bess = lam * (imp_nb - imp) * DT - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA - ll * 0.5
+        r_ev   = lam * (imp_ne - imp) * DT - abs(p_ev) * 0.001 - ll * 0.5
         r_load = -abs(p_flex - 30.0) * ZETA * 0.1 - lam * imp * DT * 0.05
         r_grid = -ll * 2.0 - lam * imp * DT * 0.1
 
