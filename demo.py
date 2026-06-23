@@ -85,14 +85,14 @@ def run_one(method: str, n_ep: int = N_EPISODES):
                 action, omega = ctrl.select_actions(obs, local_rewards,
                                                     explore=(ep < n_ep * 0.8))
                 nobs, reward, done, _, info = env.step(action, reward_weights=rw)
-                ctrl.record_reward(reward)
+                ctrl.record_reward(ctrl.compute_arw_reward(info))  # v3: fixed KPI
             else:
                 action = ctrl.select_actions(obs, explore=(ep < n_ep * 0.8))
                 nobs, reward, done, _, info = env.step(action)
 
             if isinstance(ctrl, HMADRLFramework):
                 prev          = local_rewards.copy()
-                local_rewards = ctrl.compute_local_rewards(info)
+                local_rewards = ctrl.compute_local_rewards(info, rw)  # v3: weight-aware
                 ctrl.store_transitions(obs, action, local_rewards,
                                        reward, nobs, done, prev, omega)
             elif isinstance(ctrl, FlatMADRL):
