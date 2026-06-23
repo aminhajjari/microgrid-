@@ -37,10 +37,10 @@ def run_method(method, n_ep=N_EP):
                 assert omega.shape == (2,), f"Bad omega shape: {omega.shape}"
 
                 nobs, reward, done, _, info = env.step(action, reward_weights=rw)
-                ctrl.record_reward(reward)
+                ctrl.record_reward(ctrl.compute_arw_reward(info))  # v3: fixed KPI
 
                 prev = local_rewards.copy()
-                local_rewards = ctrl.compute_local_rewards(info)
+                local_rewards = ctrl.compute_local_rewards(info, rw)  # v3: weight-aware
                 assert local_rewards.shape == (4,), f"Bad local_rewards shape"
                 assert np.all(np.abs(local_rewards) <= 1.01), f"Local rewards out of [-1,1]: {local_rewards}"
 
@@ -84,7 +84,7 @@ def check_supervisor_buffer():
         action, omega = ctrl.select_actions(obs, local_rewards)
         nobs, reward, done, _, info = env.step(action, reward_weights=rw)
         prev = local_rewards.copy()
-        local_rewards = ctrl.compute_local_rewards(info)
+        local_rewards = ctrl.compute_local_rewards(info, rw)  # v3: weight-aware
         ctrl.store_transitions(obs, action, local_rewards, reward, nobs, done, prev, omega)
         obs = nobs if not done else env.reset()[0]
 
