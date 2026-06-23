@@ -15,7 +15,22 @@ NEW in v3 (on top of all v2 fixes):
 All v2 fixes (FIX-1 … FIX-3) are preserved unchanged.
 """
 
-# VERSION: hma_drl v3
+# VERSION: hma_drl v4
+#
+# NEW in v4:
+#   CHANGE-F  compute_local_rewards() now takes the ARW weights `rw` and uses
+#             them to modulate the storage agents' (BESS/EV) cost / wear /
+#             energy / safety terms. Previously the ARW weights touched ONLY
+#             the global scalar reward used for the ARW's own return — they
+#             never reached the signal the agents learned from, so the ARW was
+#             a disconnected closed loop. Now the weights are causal.
+#             Load/Grid agents stay on FIXED weights (ARW must not reach the
+#             safety-critical agents — that reliably spikes LOLP).
+#   CHANGE-G  compute_arw_reward(): a FIXED downstream KPI (negative true grid
+#             cost minus a reliability penalty) that the ARW is trained to
+#             maximise. Training the ARW on the very weighted sum it controls
+#             was degenerate (it just dumped weight on the always-positive
+#             energy term). This objective is stationary and non-gameable.
 
 from __future__ import annotations
 
@@ -184,7 +199,27 @@ class HMADRLFramework:
         return losses
 
     # ------------------------------------------------------------------
-    def compute_local_rewards(self, info: dict) -> np.ndarray:
+    # CHANGE-G: fixed, non-gameable objective the ARW is trained to maximise.
+    # Independent of the ARW weights → stationary target for REINFORCE.
+    ARW_LOLP_PENALTY = 1.0
+
+    def compute_arw_reward(self, info: dict) -> float:
+        lam    = info.get("tariff",    0.1)
+        p_grid = info.get("p_grid",    0.0)
+        ll     = info.get("load_loss", 0.0)
+        cost   = lam * max(0.0, p_grid) * DT
+        return float(-cost - self.ARW_LOLP_PENALTY * (1.0 if ll > 1.0 else 0.0))
+
+    # ------------------------------------------------------------------
+    # CHANGE-F: ARW weights now modulate the storage agents' local rewards.
+    def compute_local_rewards(self, info: dict, rw=None) -> np.ndarray:
+        # weights = [cost, battery, energy, safety]; default = paper fixed weights
+        if rw is None:
+            w_c, w_b, w_e, w_s = 1.0, 0.3, 0.2, 0.5
+        else:
+            w_c, w_b, w_e, w_s = (float(rw[0]), float(rw[1]),
+                                  float(rw[2]), float(rw[3]))
+
         lam    = info.get("tariff",    0.1)
         p_bess = info.get("p_bess",    0.0)
         p_ev   = info.get("p_ev",      0.0)
@@ -195,10 +230,20 @@ class HMADRLFramework:
         imp    = max(0.0, p_grid)            # actual grid import
         imp_nb = max(0.0, p_grid + p_bess)   # import if BESS had done nothing
         imp_ne = max(0.0, p_grid + p_ev)     # import if EV   had done nothing
+        exp    = max(0.0, -p_grid)           # would-be export / PV curtailment
 
-        # difference rewards: credit each agent for the import cost it removed
-        r_bess = lam * (imp_nb - imp) * DT - GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA - ll * 0.5
-        r_ev   = lam * (imp_ne - imp) * DT - abs(p_ev) * 0.001 - ll * 0.5
+        # difference rewards, modulated by the ARW weights (storage agents only):
+        #   w_c → cost-saving credit, w_b → wear penalty,
+        #   w_e → PV self-consumption credit, w_s → load-loss penalty
+        r_bess = (w_c * lam * (imp_nb - imp) * DT
+                  - w_b * GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
+                  + w_e * exp * DT * 0.02
+                  - w_s * ll * 0.5)
+        r_ev   = (w_c * lam * (imp_ne - imp) * DT
+                  - w_b * abs(p_ev) * 0.001
+                  + w_e * exp * DT * 0.02
+                  - w_s * ll * 0.5)
+        # Load/Grid stay on FIXED weights — ARW must not reach them (LOLP guard)
         r_load = -abs(p_flex - 30.0) * ZETA * 0.1 - lam * imp * DT * 0.05
         r_grid = -ll * 2.0 - lam * imp * DT * 0.1
 
