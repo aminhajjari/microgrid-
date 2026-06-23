@@ -41,8 +41,8 @@ def warmup_buffer(env, controller, steps: int = WARMUP_STEPS):
         if isinstance(controller, HMADRLFramework):
             rw   = controller.get_reward_weights(obs)
             nobs, rew, done, _, info = env.step(action, reward_weights=rw)
-            controller.record_reward(rew)
-            lr    = controller.compute_local_rewards(info)
+            controller.record_reward(controller.compute_arw_reward(info))  # v3: fixed KPI
+            lr    = controller.compute_local_rewards(info, rw)             # v3: weight-aware
             omega = np.zeros(2)   # supervisor acts only on bess+ev (N_MOD=2), not 4
             controller.store_transitions(obs, action, lr, rew, nobs, done, np.zeros(4), omega)
         elif isinstance(controller, FlatMADRL):
@@ -71,14 +71,14 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
             rw = controller.get_reward_weights(obs)
             action, omega = controller.select_actions(obs, local_rewards, explore=explore)
             next_obs, reward, done, _, info = env.step(action, reward_weights=rw)
-            controller.record_reward(reward)
+            controller.record_reward(controller.compute_arw_reward(info))  # v3: fixed KPI
         else:
             action = controller.select_actions(obs, explore=explore)
             next_obs, reward, done, _, info = env.step(action)
 
         if isinstance(controller, HMADRLFramework):
             prev_local    = local_rewards.copy()
-            local_rewards = controller.compute_local_rewards(info)
+            local_rewards = controller.compute_local_rewards(info, rw)  # v3: weight-aware
             controller.store_transitions(
                 obs, action, local_rewards, reward, next_obs, done, prev_local, omega
             )
