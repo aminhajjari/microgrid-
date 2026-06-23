@@ -1,7 +1,21 @@
 """
-adaptive_reward.py  — v3 (scenario-adaptive ARW)
+adaptive_reward.py  — v4 (Dirichlet REINFORCE — correct score function)
 
-NEW in v3:
+NEW in v4:
+  CHANGE-D  The sampler is now a Dirichlet over the weight simplex instead of
+            a Gaussian on a clamped+renormalised vector. The old code computed
+            Normal(means, 0.02).log_prob(renormalised_sample) — the log-prob of
+            a sample that was NOT a draw from that Normal, so the score-function
+            estimator was biased and its magnitude exploded as the weights
+            saturated (this is what pinned the reported ARW loss at the +10
+            clamp ceiling). The network now outputs Dirichlet concentrations;
+            log_prob and entropy are exact, simplex-constrained, and the
+            entropy term is finally a live function of the parameters (the old
+            fixed-std Gaussian had constant entropy → zero exploration gradient).
+  CHANGE-E  Grad-clip relaxed 0.1 → 1.0 and the policy-loss safety clamp widened
+            ±10 → ±50 so it is a guard rail, not an active constraint.
+
+PREVIOUS (v3):
   CHANGE-1  AdaptiveRewardWeightNetwork now accepts a scenario one-hot
             embedding concatenated to the obs input (obs_dim + N_SCENARIOS).
             This lets the ARW learn different weight priorities per scenario
@@ -29,6 +43,12 @@ from typing import Tuple
 BASE_WEIGHTS      = np.array([1.0, 0.3, 0.2, 0.5], dtype=np.float32)
 BASE_WEIGHTS_NORM = BASE_WEIGHTS / BASE_WEIGHTS.sum()
 WEIGHT_SCALE      = float(BASE_WEIGHTS.sum())   # 2.0
+
+# ── CHANGE-D: Dirichlet concentration controls (exploration on the simplex) ─
+CONC_SCALE = 5.0     # larger => sharper Dirichlet => less exploration
+MIN_CONC   = 1.0     # floor on every concentration so alpha > 0 always
+MAX_CONC   = 100.0   # numerical safety ceiling
+# ──────────────────────────────────────────────────────────────────────────
 
 # ── CHANGE-1 ──────────────────────────────────────────────────────────────
 SCENARIOS   = ["normal", "crit_load", "pv_outage", "dynamic_price", "high_res"]
@@ -59,9 +79,10 @@ class AdaptiveRewardWeightNetwork(nn.Module):
     # ──────────────────────────────────────────────────────────────────────
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        logits  = self.net(obs)
-        weights = F.softmax(logits, dim=-1) * WEIGHT_SCALE
-        return weights
+        # CHANGE-D: output positive Dirichlet concentrations, not weight means.
+        logits = self.net(obs)
+        alpha  = F.softplus(logits) * CONC_SCALE + MIN_CONC
+        return alpha.clamp(max=MAX_CONC)
 
 
 class AdaptiveRewardWeighter:
@@ -151,23 +172,21 @@ class AdaptiveRewardWeighter:
         obs_t   = torch.FloatTensor(obs_aug).unsqueeze(0).to(self.device)
         # ──────────────────────────────────────────────────────────────────
 
-        weight_means = self.net(obs_t).squeeze(0)
-
-        # FIX-1: fixed std = 0.02
-        std   = torch.full_like(weight_means, 0.02)
-        noise = torch.randn_like(weight_means) * std
-
-        weights_sampled = (weight_means + noise).clamp(min=0.05)
-        weights_sampled = weights_sampled / weights_sampled.sum() * WEIGHT_SCALE
-
-        dist     = torch.distributions.Normal(weight_means, std)
-        log_prob = dist.log_prob(weights_sampled.detach()).sum()
-        entropy  = dist.entropy().sum()
+        # ── CHANGE-D: sample weights from a Dirichlet on the simplex ───────
+        # network outputs concentrations; sample p ~ Dir(alpha), weights = p*SCALE.
+        # log_prob / entropy are exact and the score function no longer explodes.
+        alpha = self.net(obs_t).squeeze(0)               # (4,), all > 0
+        dist  = torch.distributions.Dirichlet(alpha)
+        p     = dist.sample()                            # simplex sample, no grad
+        log_prob = dist.log_prob(p)                      # exact, grad wrt alpha
+        entropy  = dist.entropy()                        # live function of alpha
 
         self._log_probs.append(log_prob)
         self._entropies.append(entropy)
 
-        return weights_sampled.detach().cpu().numpy()
+        weights = (p * WEIGHT_SCALE)
+        return weights.detach().cpu().numpy()
+        # ──────────────────────────────────────────────────────────────────
 
     # ------------------------------------------------------------------
     def record(self, reward: float):
@@ -213,15 +232,15 @@ class AdaptiveRewardWeighter:
             policy_loss  = policy_loss  - self._log_probs[i] * advantage
             entropy_loss = entropy_loss - self._entropies[i]
 
-        # FIX-5
-        pl         = torch.clamp(policy_loss  / n, -10.0, 10.0)
+        # CHANGE-E: widened guard rail (was ±10, which pinned the old loss)
+        pl         = torch.clamp(policy_loss  / n, -50.0, 50.0)
         el         = torch.clamp(self.entropy_coef * entropy_loss / n, -1.0, 1.0)
         total_loss = pl + el
 
         self.opt.zero_grad()
         total_loss.backward()
-        # FIX-6
-        torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.1)
+        # CHANGE-E: grad clip relaxed 0.1 → 1.0 (Dirichlet grads are bounded)
+        torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
         self.opt.step()
 
         # FIX-7
