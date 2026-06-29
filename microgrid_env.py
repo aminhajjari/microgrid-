@@ -146,6 +146,9 @@ class MicrogridEnv(gym.Env):
         self._soc = float(np.clip(
             self._soc - p_bess * DT / (P_BESS_MAX * 2), 0.1, 0.9
         ))
+        self._soc_ev = float(np.clip(           # CHANGE-3
+            self._soc_ev - p_ev * DT / CAP_EV, 0.1, 0.9
+        ))
 
         # --- reward components ---
         r_cost    = -tariff * max(0.0, p_grid) * DT / 10.0
