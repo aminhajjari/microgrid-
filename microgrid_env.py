@@ -38,6 +38,7 @@ class MicrogridEnv(gym.Env):
         )
         self._t    = 0
         self._soc  = 0.5
+        self._soc_ev = 0.5
         self._rng  = np.random.default_rng(0)
         self._state = self._blank_state()
 
