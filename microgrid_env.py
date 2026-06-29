@@ -101,6 +101,7 @@ class MicrogridEnv(gym.Env):
         self._rng = np.random.default_rng(self.episode_seed)
         self._t   = 0
         self._soc = float(self._rng.uniform(0.3, 0.7))
+        self._soc_ev = float(self._rng.uniform(0.3, 0.7))   # CHANGE-3
         self._generate_state()          # generate state for t=0
         return self._state_to_obs(), {}
 
