@@ -13,6 +13,8 @@ import numpy as np
 import gymnasium as gym
 from microgrid_constants import DT, GAMMA, P_BESS_MAX, KAPPA, ZETA
 
+CAP_EV = 40.0   # CHANGE-3: EV usable-energy normaliser (kWh-equivalent)
+
 
 class MicrogridEnv(gym.Env):
     DT         = DT
