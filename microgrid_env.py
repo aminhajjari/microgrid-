@@ -176,6 +176,7 @@ class MicrogridEnv(gym.Env):
             "p_load":    p_load,
             "p_pv":      p_pv,
             "soc_bess":  self._soc,
+            "soc_ev":    self._soc_ev,   
             "load_loss": load_loss,
         }
         return next_obs, reward, done, False, info
