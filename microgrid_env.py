@@ -122,9 +122,20 @@ class MicrogridEnv(gym.Env):
         p_ev   = float(action[1]) * 20.0
         p_flex = 30.0 + float(action[2]) * 10.0
 
+        # CHANGE-1: limit BESS power to energy available at current SOC
+        # (p_bess>0 = discharge lowers SOC; p_bess<0 = charge raises SOC)
+        cap_dis =  (self._soc - 0.1) * (P_BESS_MAX * 2) / DT   # >=0
+        cap_chg = -(0.9 - self._soc) * (P_BESS_MAX * 2) / DT   # <=0
+        p_bess  = float(np.clip(p_bess, cap_chg, cap_dis))
+
+        # CHANGE-3a: same coupling for the EV battery
+        cap_dis_ev =  (self._soc_ev - 0.1) * CAP_EV / DT
+        cap_chg_ev = -(0.9 - self._soc_ev) * CAP_EV / DT
+        p_ev       = float(np.clip(p_ev, cap_chg_ev, cap_dis_ev))
+
         # --- power balance ---
         p_grid    = p_load - p_pv - p_bess - p_ev
-        load_loss = max(0.0, -p_grid - 50.0)
+        load_loss = max(0.0, p_grid - 50.0)   # CHANGE-2: unmet demand (import need > 50 cap)
         p_grid    = float(np.clip(p_grid, -50.0, 50.0))
 
         # --- SOC update ---
