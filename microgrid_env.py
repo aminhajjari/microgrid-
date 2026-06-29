@@ -71,12 +71,12 @@ class MicrogridEnv(gym.Env):
         t_noise     = rng.normal(0, 0.01) if self.domain_randomize else 0.0
         tariff      = float(np.clip(base_tariff + t_noise, 0.06, 0.25))
 
-        soc_ev = float(rng.uniform(0.2, 0.8)) if self.domain_randomize else 0.5
+        
 
         self._state = dict(
             hour     = hour,
             soc_bess = self._soc,
-            soc_ev   = soc_ev,
+            soc_ev   = self._soc_ev,   #  integrated EV SOC
             p_pv     = p_pv,
             p_load   = p_load,
             tariff   = tariff,
