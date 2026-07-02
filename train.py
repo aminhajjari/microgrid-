@@ -132,6 +132,9 @@ def compute_rcir(costs: list) -> float:
 
 # ---------------------------------------------------------------------------
 def save_weights(controller, save_dir: Path, method: str):
+    if isinstance(controller, HMADRLFramework):      # covers hma_fixed too
+        _save_hma_weights(controller, save_dir, method)
+        return
     w = {}
     if isinstance(controller, FlatMADRL):
         for name, agent in controller.agents.items():
