@@ -90,7 +90,14 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
 
         controller.update_all(batch_size)
 
-        total_reward += reward
+        #  log the FIXED paper-weight reward for all methods so curves
+        # are comparable and immune to ARW weight shifts. Agents still train
+        # on the weighted signals.
+        if isinstance(controller, HMADRLFramework):
+            total_reward += (1.0 * info["r_cost"] + 0.3 * info["r_battery"]
+                             + 0.2 * info["r_energy"] + 0.5 * info["r_safe"])
+        else:
+            total_reward += reward
         total_cost   += info.get("tariff", 0) * max(0, info.get("p_grid", 0))
         soc_traj.append(info.get("soc_bess", 0.5))
         load_losses.append(info.get("load_loss", 0.0))
