@@ -88,7 +88,8 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
         else:
             controller.store_transitions(obs, action, reward, next_obs, done)
 
-        controller.update_all(batch_size)
+        if explore:                      #  evaluation must not mutate networks
+            controller.update_all(batch_size)
 
         #  log the FIXED paper-weight reward for all methods so curves
         # are comparable and immune to ARW weight shifts. Agents still train
