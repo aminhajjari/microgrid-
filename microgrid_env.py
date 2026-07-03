@@ -178,5 +178,9 @@ class MicrogridEnv(gym.Env):
             "soc_bess":  self._soc,
             "soc_ev":    self._soc_ev,   
             "load_loss": load_loss,
+            "r_cost":    r_cost,     #  expose components so training
+            "r_battery": r_battery,  # code can log a fixed-weight reward
+            "r_energy":  r_energy,   # regardless of ARW weights
+            "r_safe":    r_safe,
         }
         return next_obs, reward, done, False, info
