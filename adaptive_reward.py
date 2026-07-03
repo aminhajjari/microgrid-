@@ -135,6 +135,8 @@ class AdaptiveRewardWeighter:
 
         self._baseline       = 0.0
         self._baseline_alpha = 0.05
+        self._run_var        = 1.0     #  cross-episode return variance
+        self._baseline_init  = False   #  seed baseline on first update5
 
     # ── CHANGE-2: new setter ───────────────────────────────────────────────
     def set_scenario(self, scenario: str):
@@ -209,17 +211,27 @@ class AdaptiveRewardWeighter:
             G          = self._rewards[t] + self.gamma * G
             returns[t] = G
 
-        # FIX-2
+        #  units-consistent, cross-episode whitening.
+        # Old code standardized returns per-episode (mean 0, std 1) and then
+        # subtracted a baseline EMA kept in RAW KPI units (≈ −45), so the
+        # advantage was pinned at the +2 clip for every sample → REINFORCE
+        # reinforced whatever was sampled → undirected concentration drift.
         returns  = np.clip(returns, -50.0, 50.0)
-        ret_mean = returns.mean()
-        # FIX-3
-        ret_std  = max(float(returns.std()), 0.01)
-        returns  = (returns - ret_mean) / ret_std
-
+        ret_mean = float(returns.mean())
+        if not self._baseline_init:                 # avoid the same transient
+            self._baseline      = ret_mean
+            self._baseline_init = True
         self._baseline = (
             (1 - self._baseline_alpha) * self._baseline
             + self._baseline_alpha * ret_mean
         )
+        dev = returns - self._baseline
+        self._run_var = (
+            (1 - self._baseline_alpha) * self._run_var
+            + self._baseline_alpha * float((dev ** 2).mean())
+        )
+        ret_std = max(float(np.sqrt(self._run_var)), 0.01)
+        returns = dev / ret_std
 
         ret_tensor   = torch.FloatTensor(returns).to(self.device)
         n            = min(len(self._log_probs), T)
@@ -227,8 +239,8 @@ class AdaptiveRewardWeighter:
         entropy_loss = torch.zeros(1, device=self.device)
 
         for i in range(n):
-            # FIX-4
-            advantage    = max(-2.0, min(2.0, float(ret_tensor[i]) - self._baseline))
+            
+            advantage    = max(-2.0, min(2.0, float(ret_tensor[i])))  # already baselined
             policy_loss  = policy_loss  - self._log_probs[i] * advantage
             entropy_loss = entropy_loss - self._entropies[i]
 
