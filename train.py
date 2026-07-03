@@ -71,7 +71,8 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
             rw = controller.get_reward_weights(obs)
             action, omega = controller.select_actions(obs, local_rewards, explore=explore)
             next_obs, reward, done, _, info = env.step(action, reward_weights=rw)
-            controller.record_reward(controller.compute_arw_reward(info))  # v3: fixed KPI
+            if explore:                  #  don't record ARW traces during eval
+                controller.record_reward(controller.compute_arw_reward(info))
         else:
             action = controller.select_actions(obs, explore=explore)
             next_obs, reward, done, _, info = env.step(action)
@@ -107,6 +108,13 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
         obs = next_obs
 
     arw_info = {}
+    if isinstance(controller, HMADRLFramework):
+        if explore:
+            arw_info = controller.update_arw()
+        else:                             # FIX-9: discard any eval-time traces
+            controller.arw._rewards.clear()
+            controller.arw._log_probs.clear()
+            controller.arw._entropies.clear()
     if isinstance(controller, HMADRLFramework):
         arw_info = controller.update_arw()
 
