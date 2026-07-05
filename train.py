@@ -1,15 +1,7 @@
 """
-train.py  — v2 (fixed)
+train.py  —
 
-FIXES vs v1:
-  FIX-1  train_episode() now records and returns rur, degradation,
-         exec_time so all paper Table 4 columns are populated.
-  FIX-2  run_training() default episodes raised to 10,000 to match
-         the paper specification (Section 2.5).
-  FIX-3  print_comparison_table() outputs all 8 paper Table 4 columns
-         and shows paper targets for direct comparison.
-  FIX-4  warmup_buffer() and train_episode() unchanged except for new
-         metric collection — ARW integration identical to v1.
+
 """
 
 import argparse
@@ -115,8 +107,10 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
             controller.arw._rewards.clear()
             controller.arw._log_probs.clear()
             controller.arw._entropies.clear()
-    if isinstance(controller, HMADRLFramework):
-        arw_info = controller.update_arw()
+    # FIX-12: removed duplicate unconditional update_arw() that (a) bypassed the
+    # FIX-9 eval gate, (b) overwrote arw_info with the empty-buffer placeholder
+    # so logged arw_loss was always 0.0, and (c) double-counted episodes,
+    # halving the effective ARW warmup.
 
     lolp = sum(1 for ll in load_losses if ll > 1.0) / max(len(load_losses), 1)
 
