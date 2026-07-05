@@ -18,8 +18,8 @@ w = mean_weights(arw)
 drift = np.abs(w - BASE_WEIGHTS).max()
 print(f"[A] baseline={info['arw_baseline']:.2f}  loss={info['arw_loss']:.3f}")
 print(f"[A] mean weights: {np.round(w,3)}  (init {BASE_WEIGHTS})  max drift={drift:.3f}")
-assert info["arw_baseline"] < -10, "FAIL: baseline not in raw KPI units - FIX-8 missing?"
-assert drift < 0.25, f"FAIL: drifted {drift:.3f} under pure noise"
+assert -6.0 < info["arw_baseline"] < -1.0, "FAIL: baseline not in raw per-step reward units - FIX-8/10 missing?"
+assert drift < 0.15, f"FAIL: drifted {drift:.3f} under pure noise"
 print("[A] PASS - no drift under noise\n")
 
 # Test B: reward favoring w_s -> mean w_s must rise
