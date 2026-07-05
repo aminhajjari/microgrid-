@@ -48,6 +48,7 @@ WEIGHT_SCALE      = float(BASE_WEIGHTS.sum())   # 2.0
 CONC_SCALE = 5.0     # larger => sharper Dirichlet => less exploration
 MIN_CONC   = 1.0     # floor on every concentration so alpha > 0 always
 MAX_CONC   = 100.0   # numerical safety ceiling
+INIT_CONC_SUM = 40.0 # FIX-11: total concentration at init (sharpness of start)
 # ──────────────────────────────────────────────────────────────────────────
 
 # ── CHANGE-1 ──────────────────────────────────────────────────────────────
@@ -71,11 +72,21 @@ class AdaptiveRewardWeightNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden[1], 4),
         )
-        # Initialise so the network starts at the paper's fixed weights
+        # FIX-11: initialise so the Dirichlet MEAN equals BASE_WEIGHTS exactly.
+        # The old bias (log of normalized weights) was a softmax-head init; the
+        # softplus*CONC_SCALE + MIN_CONC head distorts it, so the network started
+        # at mean weights ~[0.75, 0.40, 0.34, 0.51] instead of [1, 0.3, 0.2, 0.5]
+        # (Test A's "drift" of 0.222 was this init offset, not learning noise).
+        # Solve alpha_target = BASE_WEIGHTS_NORM * INIT_CONC_SUM for the bias via
+        # inverse softplus, and zero the final weight matrix so hidden-layer
+        # activations don't perturb the init.
         with torch.no_grad():
+            alpha_target = BASE_WEIGHTS_NORM * INIT_CONC_SUM      # e.g. [20,6,4,10]
+            y = (alpha_target - MIN_CONC) / CONC_SCALE
             self.net[-1].bias.copy_(
-                torch.tensor(np.log(BASE_WEIGHTS_NORM + 1e-8).astype(np.float32))
+                torch.tensor(np.log(np.expm1(y)).astype(np.float32))
             )
+            self.net[-1].weight.zero_()
     # ──────────────────────────────────────────────────────────────────────
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -204,19 +215,20 @@ class AdaptiveRewardWeighter:
             self._entropies.clear()
             return {"arw_loss": 0.0, "arw_episode": self._episode}
 
+        # FIX-10: contextual-bandit advantage (immediate reward, no return-to-go).
+        # The ARW's weight sample at step t shapes the reward at step t; its
+        # effect on later rewards is only indirect (through slow agent learning)
+        # and is not credit-assignable per-step. Discounted return-to-go G_t made
+        # the advantage an almost deterministic RAMP in the timestep index
+        # (G_t shrinks toward episode end: verified adv went -0.8 ... +2.0
+        # regardless of the action), so REINFORCE learned "prefer late-episode
+        # samples" = pure noise — this is why Test B failed with w_s flat.
+        # The raw ±50 pre-clip also flattened the first ~11 steps of every
+        # episode (G_t ≈ -85 clipped to -50), destroying what little signal
+        # remained there. Advantage is now (r_t - EMA baseline) / running std,
+        # which is units-consistent (FIX-8 preserved) and time-homogeneous.
         T       = len(self._rewards)
-        returns = np.zeros(T, dtype=np.float32)
-        G       = 0.0
-        for t in reversed(range(T)):
-            G          = self._rewards[t] + self.gamma * G
-            returns[t] = G
-
-        #  units-consistent, cross-episode whitening.
-        # Old code standardized returns per-episode (mean 0, std 1) and then
-        # subtracted a baseline EMA kept in RAW KPI units (≈ −45), so the
-        # advantage was pinned at the +2 clip for every sample → REINFORCE
-        # reinforced whatever was sampled → undirected concentration drift.
-        returns  = np.clip(returns, -50.0, 50.0)
+        returns = np.asarray(self._rewards, dtype=np.float32)
         ret_mean = float(returns.mean())
         if not self._baseline_init:                 # avoid the same transient
             self._baseline      = ret_mean
