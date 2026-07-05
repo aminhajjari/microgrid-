@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 #SBATCH --job-name=arw_test
-#SBATCH --output=arw_test_%j.out
+#SBATCH --output=/home/gkianfar/scratch/Amin/MSH/output/logs/arw_test_%j.out
 
 module load StdEnv/2023
 source /lustre07/scratch/gkianfar/Amin/MSH/microgridvenv/bin/activate
