@@ -287,14 +287,22 @@ def run_training(
 
     print(f"\n[{label}] Evaluating (10 greedy runs) …")
     eval_costs, eval_rewards, eval_lolps = [], [], []
+    eval_weight_means = []
     for run in range(10):
         env.episode_seed = 1000 + run
         result = train_episode(env, controller, batch_size=1, explore=False)
         eval_costs.append(result["cost"])
         eval_rewards.append(result["reward"])
         eval_lolps.append(result["lolp"])
+        eval_weight_means.append(result["mean_weights"])
 
     rcir_val = compute_rcir(eval_costs)
+
+    learned_w = np.mean(eval_weight_means, axis=0) if eval_weight_means else None
+    if isinstance(controller, HMADRLFramework) and learned_w is not None:
+        print(f"  Learned weights [w_c,w_b,w_e,w_s] for scenario='{scenario}': "
+              f"[{learned_w[0]:.3f}, {learned_w[1]:.3f}, {learned_w[2]:.3f}, {learned_w[3]:.3f}] "
+              f"(paper base: [1.000, 0.300, 0.200, 0.500])")
 
     summary = {
         "method":             method,
@@ -312,6 +320,7 @@ def run_training(
         "eval_rewards":       eval_rewards,
         "eval_lolps":         eval_lolps,
         "rcir":               rcir_val,
+        "learned_weights":    learned_w.tolist() if learned_w is not None else [],  
         "avg_cost_last50":    float(np.mean(costs[-50:]))        if costs        else 0.0,
         "avg_reward_last50":  float(np.mean(rewards[-50:]))      if rewards      else 0.0,
         "avg_lolp":           float(np.mean(eval_lolps)),
