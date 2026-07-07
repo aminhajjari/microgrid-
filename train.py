@@ -60,7 +60,7 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
 
     for _ in range(env.T):
         if isinstance(controller, HMADRLFramework):
-            rw = controller.get_reward_weights(obs)
+            rw = controller.get_reward_weights(obs, explore=explore)
             action, omega = controller.select_actions(obs, local_rewards, explore=explore)
             next_obs, reward, done, _, info = env.step(action, reward_weights=rw)
             if explore:                  #  don't record ARW traces during eval
@@ -69,20 +69,22 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
             action = controller.select_actions(obs, explore=explore)
             next_obs, reward, done, _, info = env.step(action)
 
-        if isinstance(controller, HMADRLFramework):
-            prev_local    = local_rewards.copy()
-            local_rewards = controller.compute_local_rewards(info, rw)  # v3: weight-aware
-            controller.store_transitions(
-                obs, action, local_rewards, reward, next_obs, done, prev_local, omega
-            )
-        elif isinstance(controller, FlatMADRL):
-            local_rewards = np.full(4, reward / 4)
-            controller.store_transitions(obs, action, local_rewards, next_obs, done)
-        else:
-            controller.store_transitions(obs, action, reward, next_obs, done)
+        if explore:
+            if isinstance(controller, HMADRLFramework):
+                prev_local    = local_rewards.copy()
+                local_rewards = controller.compute_local_rewards(info, rw)  # v3: weight-aware
+                controller.store_transitions(
+                    obs, action, local_rewards, reward, next_obs, done, prev_local, omega
+                )
+            elif isinstance(controller, FlatMADRL):
+                local_rewards = np.full(4, reward / 4)
+                controller.store_transitions(obs, action, local_rewards, next_obs, done)
+            else:
+                controller.store_transitions(obs, action, reward, next_obs, done)
 
-        if explore:                      #  evaluation must not mutate networks
             controller.update_all(batch_size)
+        elif isinstance(controller, HMADRLFramework):
+            local_rewards = controller.compute_local_rewards(info, rw)
 
         #  log the FIXED paper-weight reward for all methods so curves
         # are comparable and immune to ARW weight shifts. Agents still train
@@ -535,7 +537,7 @@ if __name__ == "__main__":
             batch_size = args.batch,
             device     = args.device,
             scenario   = args.scenario,
-            save_dir   = Path("/home/gkianfar/scratch/Amin/MSH/output/checkpoints"),
+            #save_dir   = Path("/home/gkianfar/scratch/Amin/MSH/output/checkpoints"),
             eval_only  = args.eval_only,
         )
         results.append(res)
