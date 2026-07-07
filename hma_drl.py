@@ -6,9 +6,8 @@ import numpy as np
 import torch
 
 from agents import TD3Agent, SACAgent
-# ── CHANGE-C: import N_SCENARIOS so constructor stays in sync ─────────────
-from adaptive_reward import AdaptiveRewardWeighter, N_SCENARIOS
-# ──────────────────────────────────────────────────────────────────────────
+from adaptive_reward import AdaptiveRewardWeighter, N_SCENARIOS, WEIGHT_SCALE
+
 from microgrid_constants import DT, GAMMA, P_BESS_MAX, KAPPA, ZETA
 
 OBS_DIM  = 7
@@ -232,7 +231,6 @@ class HMADRLFramework:
 class HMADRLFixedWeights(HMADRLFramework):
     """Ablation: HMA without ARW — uses fixed paper weights."""
     def get_reward_weights(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
-        # Fixed weights from paper Section 2.4.1 — always fixed, explore is a no-op
         return np.array([1.0, 0.3, 0.2, 0.5], dtype=np.float32)
 
     def record_reward(self, reward: float):
@@ -240,6 +238,24 @@ class HMADRLFixedWeights(HMADRLFramework):
 
     def update_arw(self) -> dict:
         return {}
+
+
+class HMADRLRandomWeights(HMADRLFramework):
+    """
+    Ablation: same architecture as HMA, but reward weights are a fresh
+    random Dirichlet draw every episode instead of learned. Controls for
+    whether ARW's gain over hma_fixed is real learning or just weight
+    variability acting as noise/exploration.
+    """
+    def get_reward_weights(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
+        p = np.random.dirichlet(np.ones(4))
+        return (p * WEIGHT_SCALE).astype(np.float32)
+
+    def record_reward(self, reward: float):
+        pass
+
+    def update_arw(self) -> dict:
+        return {"arw_loss": 0.0, "arw_episode": 0}
 
 # ---------------------------------------------------------------------------
 # Flat MA-DRL baseline — unchanged
