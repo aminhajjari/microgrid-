@@ -318,7 +318,7 @@ def run_training(
 # ---------------------------------------------------------------------------
 def plot_all_results(results: list, out_dir: Path):
     out_dir.mkdir(exist_ok=True)
-    colors = {"hma": "#E84855", "flat": "#FF9F1C", "sa": "#2EC4B6"}
+    colors = {"hma": "#E84855", "flat": "#FF9F1C", "sa": "#2EC4B6", "hma_fixed": "#8A4FFF"}
     labels = {r["method"]: r["label"] for r in results}
 
     fig, ax = plt.subplots(figsize=(9, 5))
