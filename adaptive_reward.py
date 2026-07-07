@@ -1,35 +1,4 @@
-"""
-adaptive_reward.py  — v4 (Dirichlet REINFORCE — correct score function)
 
-NEW in v4:
-  CHANGE-D  The sampler is now a Dirichlet over the weight simplex instead of
-            a Gaussian on a clamped+renormalised vector. The old code computed
-            Normal(means, 0.02).log_prob(renormalised_sample) — the log-prob of
-            a sample that was NOT a draw from that Normal, so the score-function
-            estimator was biased and its magnitude exploded as the weights
-            saturated (this is what pinned the reported ARW loss at the +10
-            clamp ceiling). The network now outputs Dirichlet concentrations;
-            log_prob and entropy are exact, simplex-constrained, and the
-            entropy term is finally a live function of the parameters (the old
-            fixed-std Gaussian had constant entropy → zero exploration gradient).
-  CHANGE-E  Grad-clip relaxed 0.1 → 1.0 and the policy-loss safety clamp widened
-            ±10 → ±50 so it is a guard rail, not an active constraint.
-
-PREVIOUS (v3):
-  CHANGE-1  AdaptiveRewardWeightNetwork now accepts a scenario one-hot
-            embedding concatenated to the obs input (obs_dim + N_SCENARIOS).
-            This lets the ARW learn different weight priorities per scenario
-            (normal / crit_load / pv_outage / dynamic_price / high_res).
-
-  CHANGE-2  AdaptiveRewardWeighter.get_weights() gains a `scenario` kwarg
-            (default "normal" — fully backward-compatible).
-            The one-hot is built internally; callers just pass a string.
-
-  CHANGE-3  AdaptiveRewardWeighter.__init__() gains an `n_scenarios` param
-            and passes obs_dim + n_scenarios to the network.
-
-All v2 fixes (FIX-1 … FIX-7) are preserved unchanged.
-"""
 
 from __future__ import annotations
 
@@ -171,7 +140,8 @@ class AdaptiveRewardWeighter:
 
     # ------------------------------------------------------------------
     def get_weights(self, obs: np.ndarray,
-                    scenario: str = None) -> np.ndarray:
+                    scenario: str = None,
+                    explore: bool = True) -> np.ndarray:
         # ── CHANGE-2: scenario kwarg overrides stored scenario if given ────
         if scenario is not None:
             self._scenario = scenario
@@ -185,10 +155,17 @@ class AdaptiveRewardWeighter:
         obs_t   = torch.FloatTensor(obs_aug).unsqueeze(0).to(self.device)
         # ──────────────────────────────────────────────────────────────────
 
+        alpha = self.net(obs_t).squeeze(0)               # (4,), all > 0
+
+        # FIX-13: deterministic Dirichlet mean during eval instead of a sample.
+        if not explore:
+            mean_p  = alpha / alpha.sum()
+            weights = mean_p * WEIGHT_SCALE
+            return weights.detach().cpu().numpy()
+
         # ── CHANGE-D: sample weights from a Dirichlet on the simplex ───────
         # network outputs concentrations; sample p ~ Dir(alpha), weights = p*SCALE.
         # log_prob / entropy are exact and the score function no longer explodes.
-        alpha = self.net(obs_t).squeeze(0)               # (4,), all > 0
         dist  = torch.distributions.Dirichlet(alpha)
         p     = dist.sample()                            # simplex sample, no grad
         log_prob = dist.log_prob(p)                      # exact, grad wrt alpha
