@@ -231,8 +231,8 @@ class HMADRLFramework:
 # ---------------------------------------------------------------------------
 class HMADRLFixedWeights(HMADRLFramework):
     """Ablation: HMA without ARW — uses fixed paper weights."""
-    def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
-        # Fixed weights from paper Section 2.4.1
+    def get_reward_weights(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
+        # Fixed weights from paper Section 2.4.1 — always fixed, explore is a no-op
         return np.array([1.0, 0.3, 0.2, 0.5], dtype=np.float32)
 
     def record_reward(self, reward: float):
