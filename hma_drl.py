@@ -1,36 +1,4 @@
-"""
-hma_drl.py  — v3 (scenario-adaptive ARW)
 
-NEW in v3 (on top of all v2 fixes):
-  CHANGE-A  HMADRLFramework gains a set_scenario() method that forwards
-            the scenario string to arw.set_scenario().  Call this once
-            after constructing the controller, before training starts.
-
-  CHANGE-B  get_reward_weights() passes self._scenario to arw.get_weights()
-            so the network always sees the correct one-hot embedding.
-
-  CHANGE-C  AdaptiveRewardWeighter is constructed with n_scenarios=5 so
-            its input layer matches the new network width.
-
-All v2 fixes (FIX-1 … FIX-3) are preserved unchanged.
-"""
-
-# VERSION: hma_drl v4
-#
-# NEW in v4:
-#   CHANGE-F  compute_local_rewards() now takes the ARW weights `rw` and uses
-#             them to modulate the storage agents' (BESS/EV) cost / wear /
-#             energy / safety terms. Previously the ARW weights touched ONLY
-#             the global scalar reward used for the ARW's own return — they
-#             never reached the signal the agents learned from, so the ARW was
-#             a disconnected closed loop. Now the weights are causal.
-#             Load/Grid agents stay on FIXED weights (ARW must not reach the
-#             safety-critical agents — that reliably spikes LOLP).
-#   CHANGE-G  compute_arw_reward(): a FIXED downstream KPI (negative true grid
-#             cost minus a reliability penalty) that the ARW is trained to
-#             maximise. Training the ARW on the very weighted sum it controls
-#             was degenerate (it just dumped weight on the always-positive
-#             energy term). This objective is stationary and non-gameable.
 
 from __future__ import annotations
 
@@ -124,10 +92,9 @@ class HMADRLFramework:
     # ──────────────────────────────────────────────────────────────────────
 
     # ------------------------------------------------------------------
-    def get_reward_weights(self, obs: np.ndarray) -> np.ndarray:
+    def get_reward_weights(self, obs: np.ndarray, explore: bool = True) -> np.ndarray:
         # ── CHANGE-B: pass scenario so network sees the one-hot ───────────
-        return self.arw.get_weights(obs, scenario=self._scenario)
-        # ──────────────────────────────────────────────────────────────────
+        return self.arw.get_weights(obs, scenario=self._scenario, explore=explore)
 
     def record_reward(self, reward: float):
         self.arw.record(reward)
