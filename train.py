@@ -56,11 +56,13 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
     load_losses   = []
     p_pv_list     = []      # FIX-1
     p_load_list   = []      # FIX-1
+    weight_traj   = []      # FIX-16: per-step (w_c,w_b,w_e,w_s), HMA-family only
     t_ep_start    = _time.time()   # FIX-1
 
     for _ in range(env.T):
         if isinstance(controller, HMADRLFramework):
             rw = controller.get_reward_weights(obs, explore=explore)
+            weight_traj.append(rw.copy())
             action, omega = controller.select_actions(obs, local_rewards, explore=explore)
             next_obs, reward, done, _, info = env.step(action, reward_weights=rw)
             if explore:                  #  don't record ARW traces during eval
@@ -109,14 +111,11 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
             controller.arw._rewards.clear()
             controller.arw._log_probs.clear()
             controller.arw._entropies.clear()
-    # FIX-12: removed duplicate unconditional update_arw() that (a) bypassed the
-    # FIX-9 eval gate, (b) overwrote arw_info with the empty-buffer placeholder
-    # so logged arw_loss was always 0.0, and (c) double-counted episodes,
-    # halving the effective ARW warmup.
+   
 
     lolp = sum(1 for ll in load_losses if ll > 1.0) / max(len(load_losses), 1)
 
-    # FIX-1: compute RUR (Eq. 22) and degradation (Eq. 19)
+   
     rur = sum(p_pv_list) / max(sum(p_load_list), 1e-9)
     deg = battery_degradation(soc_traj)
     exec_time = _time.time() - t_ep_start
@@ -144,7 +143,7 @@ def compute_rcir(costs: list) -> float:
 
 # ---------------------------------------------------------------------------
 def save_weights(controller, save_dir: Path, method: str):
-    if isinstance(controller, HMADRLFramework):      # covers hma_fixed too
+    if isinstance(controller, HMADRLFramework):      #
         _save_hma_weights(controller, save_dir, method)
         return
     w = {}
@@ -391,11 +390,7 @@ def plot_all_results(results: list, out_dir: Path):
 
 # _____________________________________________________________________
 def compute_rule_based_baseline(n_episodes: int = 50) -> float:
-    """
-    Fixed-dispatch baseline: no storage, no flexibility actions.
-    All load served from grid only. Used as cost denominator for
-    cost reduction % — same reference as the paper's Table 4.
-    """
+   
     env = MicrogridEnv(episode_seed=0, domain_randomize=False)
     costs = []
     for ep in range(n_episodes):
