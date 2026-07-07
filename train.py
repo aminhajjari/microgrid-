@@ -209,6 +209,11 @@ def run_training(
         from hma_drl import HMADRLFixedWeights
         controller = HMADRLFixedWeights(device=device)
         label      = "HMA + Fixed Weights"
+
+    elif method == "hma_random":
+        from hma_drl import HMADRLRandomWeights
+        controller = HMADRLRandomWeights(device=device)
+        label      = "HMA + Random Weights (ablation)"
   
     else:
         controller = SingleAgentDRL(device=device)
@@ -320,7 +325,8 @@ def run_training(
 # ---------------------------------------------------------------------------
 def plot_all_results(results: list, out_dir: Path):
     out_dir.mkdir(exist_ok=True)
-    colors = {"hma": "#E84855", "flat": "#FF9F1C", "sa": "#2EC4B6", "hma_fixed": "#8A4FFF"}
+    colors = {"hma": "#E84855", "flat": "#FF9F1C", "sa": "#2EC4B6",
+              "hma_fixed": "#8A4FFF", "hma_random": "#6B8E23"}
     labels = {r["method"]: r["label"] for r in results}
 
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -517,7 +523,7 @@ def print_novelty_table(results_fixed: dict, results_arw: dict,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method",    default="all", choices=["all","hma","flat","sa","hma_fixed"])
+    parser.add_argument("--method",    default="all", choices=["all","hma","flat","sa","hma_fixed","hma_random"])
     parser.add_argument("--episodes",  type=int, default=10000)  
     parser.add_argument("--batch",     type=int, default=256)
     parser.add_argument("--device",    default="cpu")
