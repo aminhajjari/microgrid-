@@ -262,7 +262,9 @@ def run_training(
             else:
                 divergence_strikes = 0
 
-    if not eval_only:
+    SAVE_CHECKPOINTS = False   
+
+    if not eval_only and SAVE_CHECKPOINTS:
         if method == "hma":
             probe_env = MicrogridEnv(episode_seed=999, domain_randomize=False)
             probe     = train_episode(probe_env, controller, batch_size=1, explore=False)
