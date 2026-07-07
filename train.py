@@ -120,6 +120,11 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
     deg = battery_degradation(soc_traj)
     exec_time = _time.time() - t_ep_start
 
+    mean_weights = (np.mean(weight_traj, axis=0).tolist()
+                    if weight_traj else [1.0, 0.3, 0.2, 0.5])
+    std_weights  = (np.std(weight_traj, axis=0).tolist()
+                    if weight_traj else [0.0, 0.0, 0.0, 0.0])
+
     return {
         "reward":      total_reward,
         "cost":        total_cost,
@@ -129,6 +134,8 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
         "rur":         rur,        # FIX-1
         "degradation": deg,        # FIX-1
         "exec_time":   exec_time,  # FIX-1
+        "mean_weights": mean_weights,  # FIX-16
+        "std_weights":  std_weights,   # FIX-16
     }
 
 
