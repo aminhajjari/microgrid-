@@ -197,13 +197,19 @@ class HMADRLFramework:
         imp_nb = max(0.0, p_grid + p_bess)   # import if BESS had done nothing
         imp_ne = max(0.0, p_grid + p_ev)     # import if EV   had done nothing
         exp    = max(0.0, -p_grid)           # would-be export / PV curtailment
+        p_pv   = info.get("p_pv",   0.0)
+        p_load = info.get("p_load", 30.0)
+        surplus       = max(0.0, p_pv - p_load)          # FIX-18
+        charge_credit = min(max(0.0, -p_bess), surplus) / P_BESS_MAX * DT
 
         # difference rewards, modulated by the ARW weights (storage agents only):
         #   w_c → cost-saving credit, w_b → wear penalty,
-        #   w_e → PV self-consumption credit, w_s → load-loss penalty
+        #   w_e → PV self-consumption credit (now includes charging surplus
+        #         PV into the battery, not just raw export — FIX-18),
+        #   w_s → load-loss penalty
         r_bess = (w_c * lam * (imp_nb - imp) * DT
                   - w_b * GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-                  + w_e * exp * DT * 0.02
+                  + w_e * (exp * DT * 0.02 + 0.5 * charge_credit)
                   - w_s * ll * 0.5)
         r_ev   = (w_c * lam * (imp_ne - imp) * DT
                   - w_b * abs(p_ev) * 0.001
