@@ -96,7 +96,7 @@ def rur(p_pv: list[float],
 def degradation(soc_traj: list[float],
                 phi: float = 1.0,
                 kappa: float = 1.5,
-                soc_min: float = 0.2,
+                soc_min: float = 0.1,   # FIX-19: matches env's real floor (was 0.2)
                 soc_max: float = 0.9) -> float:
     """
     SOC cycle-depth degradation index (Eq. 19).
