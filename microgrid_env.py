@@ -151,9 +151,17 @@ class MicrogridEnv(gym.Env):
         ))
 
         # --- reward components ---
+        # --- reward components ---
         r_cost    = -tariff * max(0.0, p_grid) * DT / 10.0
         r_battery = -GAMMA * (abs(p_bess) / P_BESS_MAX) ** KAPPA
-        r_energy  = (p_pv / 50.0) * DT
+
+        # FIX-18: charge_credit rewards BESS charging power specifically when
+        # it's absorbing PV that would otherwise be curtailed/wasted (capped
+        # by that surplus, so charging from the grid gets no credit).
+        surplus       = max(0.0, p_pv - p_load)
+        charge_credit = min(max(0.0, -p_bess), surplus) / P_BESS_MAX * DT
+        r_energy      = (p_pv / 50.0) * DT + 0.5 * charge_credit
+
         r_safe    = -load_loss / 50.0
         reward    = float(w_c*r_cost + w_b*r_battery + w_e*r_energy + w_s*r_safe)
 
