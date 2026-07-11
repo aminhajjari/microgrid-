@@ -1,5 +1,5 @@
 """
-metrics.py  — v2 (paper Table 4 + Table 6 compatible)
+metrics_ر2.py  — v2 (paper Table 4 + Table 6 compatible)
 
 NEW in v2:
   rur()           — Renewable Utilization Ratio (Eq. 22)
