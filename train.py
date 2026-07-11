@@ -103,6 +103,8 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
         load_losses.append(info.get("load_loss", 0.0))
         p_pv_list.append(info.get("p_pv", 0.0))      # FIX-1
         p_load_list.append(info.get("p_load", 30.0))  # FIX-1
+        p_bess_traj.append(info.get("p_bess", 0.0))    # FIX-20
+        p_ev_traj.append(info.get("p_ev", 0.0))        # FIX-20
         obs = next_obs
 
     arw_info = {}
@@ -138,6 +140,9 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
         "exec_time":   exec_time,  # FIX-1
         "mean_weights": mean_weights,  # FIX-16
         "std_weights":  std_weights,   # FIX-16
+        "p_bess_traj":  p_bess_traj,   # FIX-20
+        "p_ev_traj":    p_ev_traj,     # FIX-20
+    }
     }
 
 
@@ -239,6 +244,7 @@ def run_training(
     rewards, costs, lolps       = [], [], []
     rurs, degradations, exec_times = [], [], []   # FIX-1
     soc_final, arw_losses       = [], []
+    bess_final, ev_final        = [], []   # FIX-20
     t0                          = time.time()
     divergence_strikes          = 0
 
@@ -252,6 +258,8 @@ def run_training(
         degradations.append(result["degradation"]) # FIX-1
         exec_times.append(result["exec_time"])   # FIX-1
         soc_final.append(result["soc_traj"])
+        bess_final.append(result["p_bess_traj"])  # FIX-20
+        ev_final.append(result["p_ev_traj"])      # FIX-20
         arw_losses.append(result["arw_loss"])
 
         if verbose and ep % max(1, n_episodes // 10) == 0:
@@ -318,6 +326,8 @@ def run_training(
         "exec_times":         exec_times,
         "arw_losses":         arw_losses,
         "soc_traj_last":      soc_final[-1] if soc_final else [],
+        "bess_traj_last":     bess_final[-1] if bess_final else [],  # FIX-20
+        "ev_traj_last":       ev_final[-1] if ev_final else [],      # FIX-20
         "eval_costs":         eval_costs,
         "eval_rewards":       eval_rewards,
         "eval_lolps":         eval_lolps,
@@ -377,6 +387,30 @@ def plot_all_results(results: list, out_dir: Path):
     ax.set_title("SOC Trajectories over 24h Horizon")
     ax.set_ylim(0, 1); ax.legend(); ax.grid(alpha=0.3); plt.tight_layout()
     fig.savefig(out_dir / "fig6_soc_trajectories.png", dpi=150); plt.close(fig)
+
+    # FIX-20: BESS active power dispatch, last episode, all methods
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for r in results:
+        if r.get("bess_traj_last"):
+            t = np.arange(len(r["bess_traj_last"]))
+            ax.plot(t, r["bess_traj_last"], color=colors[r["method"]], lw=2, label=labels[r["method"]])
+    ax.axhline(0, color="k", lw=0.8, alpha=0.5)
+    ax.set_xlabel("Time (h)"); ax.set_ylabel("BESS Power (kW)  [+discharge / -charge]")
+    ax.set_title("BESS Active Power Output — Last Episode")
+    ax.legend(); ax.grid(alpha=0.3); plt.tight_layout()
+    fig.savefig(out_dir / "fig7_bess_power.png", dpi=150); plt.close(fig)
+
+    # FIX-20: EV charging/discharging power, last episode, all methods
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for r in results:
+        if r.get("ev_traj_last"):
+            t = np.arange(len(r["ev_traj_last"]))
+            ax.plot(t, r["ev_traj_last"], color=colors[r["method"]], lw=2, label=labels[r["method"]])
+    ax.axhline(0, color="k", lw=0.8, alpha=0.5)
+    ax.set_xlabel("Time (h)"); ax.set_ylabel("EV Power (kW)  [+discharge / -charge]")
+    ax.set_title("EV Charging/Discharging Power — Last Episode")
+    ax.legend(); ax.grid(alpha=0.3); plt.tight_layout()
+    fig.savefig(out_dir / "fig8_ev_power.png", dpi=150); plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(7, 5))
     data = [r["eval_rewards"] for r in results]
