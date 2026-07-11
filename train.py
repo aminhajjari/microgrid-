@@ -56,6 +56,8 @@ def train_episode(env, controller, batch_size: int = 256, explore: bool = True) 
     load_losses   = []
     p_pv_list     = []      # FIX-1
     p_load_list   = []      # FIX-1
+    p_bess_traj   = []      # FIX-20: for BESS power plot
+    p_ev_traj     = []      # FIX-20: for EV power plot
     weight_traj   = []      # FIX-16: per-step (w_c,w_b,w_e,w_s), HMA-family only
     t_ep_start    = _time.time()   # FIX-1
 
