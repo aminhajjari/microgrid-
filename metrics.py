@@ -56,13 +56,11 @@ def frequency_deviation_index(
 # ---------------------------------------------------------------------------
 # Eq. 19
 # ---------------------------------------------------------------------------
-def battery_degradation(
-    soc_trajectory: Sequence[float],
-    phi:   float = 0.05,
-    kappa: float = 1.4,
-    soc_max: float = 0.9,
-    soc_min: float = 0.1,
-) -> float:
+def battery_degradation(soc_traj: list[float],
+                        phi: float = 1.0,
+                        kappa: float = 1.5,
+                        soc_min: float = 0.1,   # FIX-19: matches env's real floor (was 0.2)
+                        soc_max: float = 0.9) -> float:
     """
     D_batt = Σ φ · (ΔSOC_k / (SOC_max - SOC_min))^κ
 
